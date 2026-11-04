@@ -24,7 +24,17 @@ export type SessionLimit = {
   now: number
   /** The reset as a local clock time, "20:32"; absent when unknown. */
   resetClock?: string
+  /** How much of the 7-day usage window is used, 0 to 100; absent when not reported. */
+  week?: number
+  /** How much of a monthly usage window is used, 0 to 100; absent when none is reported. */
+  month?: number
 }
+
+/** The bars a person can switch on and off, top to bottom. */
+export type BarId = 'month' | 'week' | 'session' | 'context' | 'cache'
+
+/** Which bars are switched on. */
+export type ShownBars = Record<BarId, boolean>
 
 export type CacheClock = {
   /** When the last main-chat reply ended, in ms. 0 before the first reply. */
@@ -67,8 +77,10 @@ declare module 'claude-code' {
       cacheClock: CacheClock | null
       /** Keep warm while it runs, else null. */
       cacheWarm: CacheWarm | null
-      /** True while the cache bar is hidden (/context-pane cache, or its ✕). */
-      cacheHidden: boolean
+      /** Which bars are switched on; null until the session starts (all on). */
+      shown: ShownBars | null
+      /** True while the row of switches is open (the ⚙ button). */
+      switchesOpen: boolean
       /** The 5-hour usage window ("Current session"), or null off a subscription. */
       sessionLimit: SessionLimit | null
     }

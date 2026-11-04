@@ -1,14 +1,14 @@
 import type { EngineInterface, ModelForkResult } from 'claude-code'
 
 import type { CacheClock, CacheWarm } from '../types'
+import { readShown, setBar } from './bars'
 
 // The prompt cache clock: counts down until the chat's prompt cache goes cold,
 // and can keep it warm with a small background ping. register.tsx draws it as
-// the second bar and calls these functions from its hooks.
+// the cache bar and calls these functions from its hooks.
 
 const CLOCK = { plugin: 'context-pane', key: 'cacheClock' } as const
 const WARM = { plugin: 'context-pane', key: 'cacheWarm' } as const
-const HIDDEN = { plugin: 'context-pane', key: 'cacheHidden' } as const
 
 const FIVE_MIN = 5 * 60_000
 const ONE_HOUR = 60 * 60_000
@@ -73,8 +73,7 @@ async function setWarm($: EngineInterface, w: CacheWarm | null) {
 }
 
 async function isHidden($: EngineInterface): Promise<boolean> {
-  const { value } = await $.state.get(HIDDEN)
-  return value === true
+  return !(await readShown($)).cache
 }
 
 /** What the cache bar draws from: the clock, keep warm, and whether it is hidden. */
@@ -103,10 +102,10 @@ async function log($: EngineInterface, line: string) {
   }
 }
 
-// Shows or hides the cache bar in every chat (kept in $.store).
+// Shows or hides the cache bar, through its switch (remembered in every chat).
+// Hiding it also stops keep warm, which never runs out of sight.
 export async function setCacheHidden($: EngineInterface, value: boolean) {
-  await $.state.set(HIDDEN, value)
-  await $.store.set('cacheHidden', value).catch(() => undefined)
+  await setBar($, 'cache', !value)
   if (value) await stopWarm($, 'Keep warm stopped: the cache bar is hidden.', false)
 }
 
@@ -233,7 +232,7 @@ async function tick($: EngineInterface) {
   await setClock($, { ...c, now })
 }
 
-/** session.start: timers, the saved hidden choice, the cache length. */
+/** session.start: timers and the cache length. */
 export async function cacheStart($: EngineInterface) {
   sid = await $.session.id()
   // HOME from the environment: the plugin's own path is not under it when loaded from its source folder.
@@ -243,8 +242,6 @@ export async function cacheStart($: EngineInterface) {
   if (ttlSaved === '5m' || ttlSaved === '1h') remembered = ttlSaved
   const manualSaved = await $.store.get('cacheTtlManual').catch(() => undefined)
   manual = manualSaved === '5m' || manualSaved === '1h' ? manualSaved : undefined
-  const saved = await $.store.get('cacheHidden').catch(() => undefined)
-  await $.state.set(HIDDEN, saved === true)
   $.clock.every(1000, () => {
     void tick($).catch(() => undefined)
     void warmTick($).catch(err => log($, `keep warm tick failed: ${String(err)}`))

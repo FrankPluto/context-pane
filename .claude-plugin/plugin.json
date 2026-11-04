@@ -1,9 +1,41 @@
 {
   "name": "context-pane",
-  "version": "1.4.0",
-  "description": "Live bars just above the prompt: your 5-hour session usage with its reset time, how full the context window is with recall zones (SHARP, GOOD, WEAKER, FORGETFUL, AUTO-COMPACT), and a prompt cache countdown with Keep warm",
+  "version": "1.9.0",
+  "description": "Live bars just above the prompt: your month, week and 5-hour session usage, how full the context window is with recall zones (SHARP, GOOD, WEAKER, FORGETFUL, AUTO-COMPACT), and a prompt cache countdown with Keep warm. Switch each bar on or off.",
   "author": {
     "name": "Frank"
   },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "showMonth": {
+      "type": "boolean",
+      "title": "Month bar",
+      "description": "A 1px line for a monthly usage window, when one is reported.",
+      "default": true
+    },
+    "showWeek": {
+      "type": "boolean",
+      "title": "Week bar",
+      "description": "A 1px line for the 7-day usage window.",
+      "default": true
+    },
+    "showSession": {
+      "type": "boolean",
+      "title": "5h Session bar",
+      "description": "The 5-hour usage window, with when it resets.",
+      "default": true
+    },
+    "showContext": {
+      "type": "boolean",
+      "title": "Context bar",
+      "description": "How full the context window is, with recall zones.",
+      "default": true
+    },
+    "showCache": {
+      "type": "boolean",
+      "title": "Cache bar",
+      "description": "The prompt cache countdown, with Keep warm.",
+      "default": true
+    }
+  }
 }

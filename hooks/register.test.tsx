@@ -10,6 +10,7 @@ function setup(on: TestOn, opts: { ttl?: () => string; store?: Record<string, un
   const store: Record<string, unknown> = opts.store ?? {}
   const toasts: string[] = []
   const forks: string[] = []
+  const config: Record<string, unknown> = {}
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('turn.start', async () => ({}) as never)
   on('turn.complete', async () => ({ text: '' }) as never)
@@ -48,6 +49,11 @@ function setup(on: TestOn, opts: { ttl?: () => string; store?: Record<string, un
     store[key] = value
     return { value: undefined } as never
   })
+  on('config.set', async ($, e) => {
+    const { key, value } = e as { key: string; value: unknown }
+    config[key] = value
+    return { value } as never
+  })
   on('ui.toast', async ($, e) => {
     toasts.push((e as { text: string }).text)
     return { value: undefined } as never
@@ -60,11 +66,19 @@ function setup(on: TestOn, opts: { ttl?: () => string; store?: Record<string, un
     const { Text } = $.ui.resolve(e)
     return <Text>REST</Text>
   })
-  return { files, store, toasts, forks }
+  return { files, store, toasts, forks, config }
 }
 
 const props = (isWorking = false) => ({ isWorking, hasSurvey: false, maxRows: 10, bodyColumns: 120 }) as never
 const run = async ($: TestDollar, args: string) => JSON.stringify(await $.command.run({ command: 'context-pane', args } as never))
+
+type Mounted = { findAll(q: { type: 'Svg' }): Promise<Array<{ props: Record<string, unknown> }>>; find(q: { type: 'Text'; text: RegExp }): Promise<{ props: { color?: unknown } } | undefined> }
+
+// The cache time's text colour, or undefined when it isn't shown.
+async function cacheTime(v: Mounted, surface: string, time: RegExp): Promise<string | undefined> {
+  const t = await v.find({ type: 'Text', text: new RegExp(`^${time.source.replace(/^\^|\$$/g, '')} left`) })
+  return t ? String(t.props.color ?? 'text') : undefined
+}
 
 for (const surface of ['desktop', 'terminal'] as const) {
   test(`the cache bar counts down, colours by zone and goes grey when lost (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -82,15 +96,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await clock.settle()
     await clock.advance(30_000)
     v = await mount()
-    expect(await v.find({ type: 'Text', text: /^4:30 left/ }), '4:30 left of a 5 min cache').toBeDefined()
-    expect((await v.find({ type: 'Text', text: /^4:30 left/ }))?.props.color, 'FRESH label colour').toBe('#1E8E3E')
+    expect(await cacheTime(v, surface, /^4:30$/), '4:30 left of a 5 min cache, in the FRESH colour').toContain('#1E8E3E')
     expect(await v.find({ type: 'Button', text: '⏱ 5 min' }), 'cache length').toBeDefined()
 
     // The ⏱ switch flips the timer to 1 hour and back, and remembers it.
     await v.press({ key: 'cache-ttl' })
     v = await mount()
     expect(await v.find({ type: 'Button', text: '⏱ 1 h' }), 'switched to 1 hour').toBeDefined()
-    expect(await v.find({ type: 'Text', text: /^59:30 left/ }), 'counts from 1 hour').toBeDefined()
+    expect(await cacheTime(v, surface, /^59:30$/), 'counts from 1 hour').toBeDefined()
     await v.press({ key: 'cache-ttl' })
     v = await mount()
     expect(await v.find({ type: 'Button', text: '⏱ 5 min' }), 'back to 5 min').toBeDefined()
@@ -109,7 +122,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // 20 s left: WARNING, its caption in the theme's blue, its label light blue in dark mode.
     await clock.advance(4 * 60_000 + 10_000)
     v = await mount()
-    expect((await v.find({ type: 'Text', text: /^0:20 left/ }))?.props.color, 'WARNING caption follows the theme').toBe('suggestion')
+    expect(await cacheTime(v, surface, /^0:20$/), 'WARNING caption follows the theme').toBe('suggestion')
     if (surface === 'desktop') {
       const svgs = await v.findAll({ type: 'Svg' })
       const src = String(svgs[1]?.props.source ?? '')
@@ -128,7 +141,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`the ✕ icon and /context-pane cache hide and show the cache bar (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { store, toasts } = setup(on, { ttl: () => '1h' })
+    const { config, toasts } = setup(on, { ttl: () => '1h' })
     const clock = mock.clock(on, { now: 1_000_000 })
     await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
     await $.turn.complete({ answer: '' } as never)
@@ -141,7 +154,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     v = await mount()
     expect(await v.find({ text: /Cache/ }), 'cache bar hidden').toBeUndefined()
     expect(await v.find({ text: /182k/ }), 'context row stays').toBeDefined()
-    expect(store.cacheHidden, 'hidden is saved for every chat').toBe(true)
+    expect(config['context-pane.showCache'], 'hidden is saved as the Cache switch').toBe(false)
     expect(toasts.join(' '), 'the toast names the way back').toContain('/context-pane cache')
 
     expect(await run($, 'cache'), 'show reply').toContain('Cache bar shown')
@@ -179,7 +192,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await clock.settle()
     expect(forks, 'one ping with the tiny prompt').toEqual(['Reply with the single word: ok'])
     v = await mount()
-    expect(await v.find({ type: 'Text', text: /^4:[45]\d left/ }), 'back to nearly 5:00 left').toBeDefined()
+    expect(await cacheTime(v, surface, /^4:[45]\d$/), 'back to nearly 5:00 left').toBeDefined()
     const logPath = Object.keys(files).find(k => k === '/Users/test/.claude/mods-logs/context-pane-cache.log') ?? ''
     expect(files[logPath] ?? '', 'the ping is logged').toContain('ping 1: cache read 182000, cache write 0, error none')
 
@@ -235,6 +248,73 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await v.find({ type: 'Button', text: '⏱ 1 h' }), '1 hour guess').toBeDefined()
   })
 
+  test(`a monthly window adds a 1px month bar above the week bar (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const limits: unknown[] = [{ kind: 'five_hour', percentUsed: 10 }, { kind: 'seven_day', percentUsed: 40 }, { kind: 'monthly', percentUsed: 12 }]
+    setup(on, { limits: () => limits })
+    mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ type: 'Text', text: /^ +Month $/ }), 'Month caption').toBeDefined()
+    expect((await v.find({ type: 'Text', text: /^12%$/ }))?.props.color, 'in indigo').toBe('#3F51B5')
+    if (surface === 'desktop') {
+      const svgs = await v.findAll({ type: 'Svg' })
+      expect(String(svgs[0]?.props.alt), 'month bar first').toBe('Month 12% used')
+      expect(String(svgs[0]?.props.source), 'month bar is a 1px line').toContain('height="1"')
+      expect(String(svgs[0]?.props.source), 'month bar markers stay 4px').toMatch(/width="3" height="4"/)
+      expect(String(svgs[1]?.props.alt), 'then the week bar').toBe('Week 40% used')
+    }
+  })
+
+  test(`every bar starts on, and the switches turn each one off and back on (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const limits: unknown[] = [{ kind: 'five_hour', percentUsed: 10 }, { kind: 'seven_day', percentUsed: 40 }]
+    const { config } = setup(on, { limits: () => limits, ttl: () => '1h' })
+    const clock = mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    await $.turn.complete({ answer: '' } as never)
+    await clock.settle()
+    const mount = () => $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+
+    let v = await mount()
+    expect(await v.find({ type: 'Text', text: /^ +Week Session $/ }), 'week on').toBeDefined()
+    expect(await v.find({ text: /182k/ }), 'context on').toBeDefined()
+    expect(await v.find({ type: 'Button', text: '⏱ 1 h' }), 'cache on').toBeDefined()
+    expect(await v.find({ type: 'Button', text: /Context$/ }), 'switches closed').toBeUndefined()
+
+    await v.press({ key: 'switches' })
+    v = await mount()
+    expect(await v.find({ type: 'Button', text: '● Context' }), 'Context switch on').toBeDefined()
+    expect(await v.find({ type: 'Button', text: '● Month' }), 'Month switch on').toBeDefined()
+
+    await v.press({ key: 'bar-context' })
+    v = await mount()
+    expect(await v.find({ text: /182k/ }), 'context hidden').toBeUndefined()
+    expect(await v.find({ type: 'Button', text: '○ Context' }), 'Context switch off').toBeDefined()
+    expect(config['context-pane.showContext'], 'saved as a setting').toBe(false)
+
+    expect(await run($, 'week'), 'command hides the week').toContain('Week bar hidden')
+    v = await mount()
+    expect(await v.find({ type: 'Text', text: /^ +Week Session $/ }), 'week hidden').toBeUndefined()
+    expect(await v.find({ type: 'Text', text: /^10%$/ }), 'session stays').toBeDefined()
+
+    for (const id of ['session', 'cache']) await run($, id)
+    v = await mount()
+    expect(await v.find({ text: /all bars off/ }), 'a line keeps the ⚙ when every bar is off').toBeDefined()
+    expect(await v.find({ type: 'Button', text: '⚙' }), 'the ⚙ stays').toBeDefined()
+
+    for (const id of ['context', 'week', 'session', 'cache']) await run($, id)
+    v = await mount()
+    expect(await v.find({ text: /182k/ }), 'context back').toBeDefined()
+    expect(await v.find({ type: 'Button', text: '⏱ 1 h' }), 'cache back').toBeDefined()
+  })
+
+  test(`a switch saved off stays off in a new chat (${surface})`, { timeoutMs: 30000, options: { showContext: false } }, async ($, on) => {
+    setup(on)
+    mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ text: /182k/ }), 'context off').toBeUndefined()
+  })
+
   test(`the session bar sits on top with the 5-hour window and when it resets (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const start = 1_000_000
     const limits: unknown[] = [{ kind: 'five_hour', percentUsed: 23.5, resetsAt: new Date(start + (2 * 60 + 14) * 60_000).toISOString() }, { kind: 'seven_day', percentUsed: 40 }]
@@ -246,20 +326,32 @@ for (const surface of ['desktop', 'terminal'] as const) {
     let v = await mount()
     expect(await v.find({ type: 'Text', text: /^24%$/ }), '23.5% shows as 24%').toBeDefined()
     expect((await v.find({ type: 'Text', text: /^24%$/ }))?.props.color, 'OK zone colour').toBe('#34A853')
-    expect(await v.find({ text: /resets in 2 h 14 min \[20:32\]/ }), 'reset countdown and clock time').toBeDefined()
+    expect(await v.find({ type: 'Text', text: /^ +Week Session $/ }), 'Week beside Session').toBeDefined()
+    expect((await v.find({ type: 'Text', text: /^40%$/ }))?.props.color, 'in the week colour').toBe('#D81B60')
+    if (surface === 'desktop') {
+      expect(await v.find({ type: 'Text', text: /^resets in 2 h 14 min $/ }), 'reset countdown').toBeDefined()
+      expect(await v.find({ type: 'Text', text: /^20:32$/ }), 'clock time in plain text').toBeDefined()
+    } else {
+      expect(await v.find({ text: /resets in 2 h 14 min 20:32/ }), 'reset countdown and clock time').toBeDefined()
+    }
     // On top: the session line comes before the context total.
     const texts = (await v.findAll({ type: 'Text' })).map(x => x.text)
     const at = (re: RegExp) => texts.findIndex(x => re.test(x))
     expect(at(/^24%$/), 'above the context total').toBeLessThan(at(/182k \/ 1m/))
     if (surface === 'desktop') {
       const svgs = await v.findAll({ type: 'Svg' })
-      expect(String(svgs[0]?.props.alt), 'first drawing is the session bar').toBe('Session 24% used, resets in 2 h 14 min [20:32]')
+      expect(String(svgs[0]?.props.alt), 'first drawing is the week bar').toBe('Week 40% used')
+      expect(String(svgs[0]?.props.source), 'week bar has no labels').not.toContain('<text')
+      expect(String(svgs[0]?.props.source), 'week bar shades into deep pink').toContain('#AD1457')
+      expect(String(svgs[0]?.props.source), 'week bar is a 1px line').toContain('height="1"')
+      expect(String(svgs[0]?.props.source), 'week bar markers stay 4px').toMatch(/width="3" height="4"/)
+      expect(String(svgs[1]?.props.alt), 'then the session bar').toBe('Session 24% used, resets in 2 h 14 min 20:32')
     }
 
     // The countdown moves on its own every 30 s.
     await clock.advance(60 * 60_000)
     v = await mount()
-    expect(await v.find({ text: /resets in 1 h 14 min \[20:32\]/ }), 'an hour later, same clock time').toBeDefined()
+    expect(await v.find({ text: surface === 'desktop' ? /^resets in 1 h 14 min $/ : /resets in 1 h 14 min 20:32/ }), 'an hour later').toBeDefined()
 
     // Past the reset time: a fresh window.
     await clock.advance(75 * 60_000)
@@ -287,7 +379,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const mount = () => $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
     expect(await run($, 'demo'), 'demo on').toContain('one 60 s demo countdown')
     let v = await mount()
-    expect(await v.find({ type: 'Text', text: /^1:00 left/ }), 'starts at 1:00 from now').toBeDefined()
+    expect(await cacheTime(v, surface, /^1:00$/), 'starts at 1:00 from now').toBeDefined()
     for (let i = 0; i < 61; i++) await clock.advance(1000)
     v = await mount()
     expect(await v.find({ type: 'Text', text: /^lost$/ }), 'lost at the end').toBeDefined()
@@ -295,7 +387,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await clock.settle()
     v = await mount()
     expect(await v.find({ type: 'Button', text: '⏱ 1 h' }), 'back to 1 hour').toBeDefined()
-    expect(await v.find({ type: 'Text', text: /^48:5\d left/ }), 'the real time since the last reply').toBeDefined()
+    expect(await cacheTime(v, surface, /^48:5\d$/), 'the real time since the last reply').toBeDefined()
     expect(toasts.join(' '), 'says the demo is over').toContain('Demo over')
   })
 

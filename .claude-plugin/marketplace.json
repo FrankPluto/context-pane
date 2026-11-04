@@ -3,12 +3,12 @@
   "owner": {
     "name": "Frank"
   },
-  "description": "Context Pane: live session, context and prompt cache bars above the Claude Code prompt",
+  "description": "Context Pane: live month, week, session, context and prompt cache bars above the Claude Code prompt, each with its own switch",
   "plugins": [
     {
       "name": "context-pane",
       "source": "./",
-      "description": "Live bars above the prompt: session usage, context window and prompt cache"
+      "description": "Live bars above the prompt: usage (month, week, 5-hour session), context window and prompt cache. Switch each bar on or off."
     }
   ]
 }

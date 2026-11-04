@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ContextRow, ContextSnapshot, SessionLimit } from '../types'
+import type { BarId, ContextRow, ContextSnapshot, SessionLimit } from '../types'
+import { BARS, isBarId, isSwitchesOpen, readShown, setBar, startBars, toggleSwitches } from './bars'
 import { cacheStart, cachePrompt, cacheTurnComplete, cacheTurnStart, hideCache, keepWarmCommand, readCache, setCacheHidden, setDemo, setTtl, toggleTtl, toggleWarm } from './cache'
 import { TINY5_WOFF2_BASE64 } from './tiny5'
 
@@ -91,7 +92,11 @@ function zoneGradient(id: string, stops: Array<{ at: number; color: string }>): 
 
 // `fill` is the filled share of the bar (0–1); `id` names its gradient.
 // `h` is the bar's height in px (the context and cache bars use BAR_H).
-function barSvg(segs: Seg[], fill: number, id: string, h = BAR_H): string {
+// `lineH` thinner than `h` draws a line of that height, centred, with every
+// zone marker still `h` tall, so the markers read as in the full bars.
+function barSvg(segs: Seg[], fill: number, id: string, h = BAR_H, lineH = h): string {
+  const isLine = lineH < h
+  const y = (h - lineH) / 2
   const fillW = Math.max(0, Math.min(BAR_W, fill * BAR_W))
   const x = (share: number) => share * BAR_W
 
@@ -99,8 +104,9 @@ function barSvg(segs: Seg[], fill: number, id: string, h = BAR_H): string {
   // coloured tick; one the fill has passed becomes a gap cut through the bar,
   // so it stays visible whatever colour the fill has there.
   const marks = segs.filter(sec => sec.from > 0)
-  const passed = marks.filter(sec => x(sec.from) < fillW)
-  const ahead = marks.filter(sec => x(sec.from) >= fillW)
+  // A line too thin for a visible cut gets a full-height tick at every marker.
+  const passed = isLine ? [] : marks.filter(sec => x(sec.from) < fillW)
+  const ahead = isLine ? marks : marks.filter(sec => x(sec.from) >= fillW)
   const ticks = ahead.map(sec => `<rect x="${x(sec.from) - 1.5}" y="0" width="3" height="${h}" fill="${sec.color}"/>`)
 
   // Split [0, BAR_W] at each passed marker, leaving GAP units empty there,
@@ -118,7 +124,7 @@ function barSvg(segs: Seg[], fill: number, id: string, h = BAR_H): string {
     pieces
       .map(([a, b]) => [Math.max(a, from), Math.min(b, to)] as const)
       .filter(([a, b]) => b > a)
-      .map(([a, b]) => `<rect x="${a}" y="0" width="${b - a}" height="${h}" fill="${paint}"${extra}/>`)
+      .map(([a, b]) => `<rect x="${a}" y="${y}" width="${b - a}" height="${lineH}" fill="${paint}"${extra}/>`)
       .join('')
   // The fill takes each zone's label colour from that zone's marker on, and
   // blends into the next zone's colour by the next marker.
@@ -258,6 +264,40 @@ const LIMIT_SEGS: Seg[] = [
   { label: 'LIMIT', from: 0.9, to: 1, color: '#EA4335' },
 ]
 
+// The 7-day window: the same sections as the session bar, in pink, used
+// nowhere else, shading from light to deep pink across the bar. No labels.
+const WEEK_LIGHT = '#F06292'
+const WEEK_DEEP = '#AD1457'
+const WEEK_COLOR = '#D81B60' // the "Week 46%" caption, between the two
+
+// The colour `share` (0–1) of the way from `a` to `b`, both "#RRGGBB".
+function mixHex(a: string, b: string, share: number): string {
+  const ch = (h: string, i: number) => parseInt(h.slice(1 + i * 2, 3 + i * 2), 16)
+  return '#' + [0, 1, 2].map(i => Math.round(ch(a, i) + (ch(b, i) - ch(a, i)) * share).toString(16).padStart(2, '0')).join('').toUpperCase()
+}
+
+const WEEK_SEGS: Seg[] = LIMIT_SEGS.map(z => ({ ...z, color: mixHex(WEEK_LIGHT, WEEK_DEEP, z.from), endColor: mixHex(WEEK_LIGHT, WEEK_DEEP, z.to) }))
+
+// A monthly window, drawn above the week bar only when one is reported. Today
+// the engine reports five_hour, seven_day and a gateway's spend_limit, so this
+// stays hidden until a monthly kind shows up. Indigo, used nowhere else.
+const MONTH_LIGHT = '#7986CB'
+const MONTH_DEEP = '#283593'
+const MONTH_COLOR = '#3F51B5'
+const MONTH_SEGS: Seg[] = LIMIT_SEGS.map(z => ({ ...z, color: mixHex(MONTH_LIGHT, MONTH_DEEP, z.from), endColor: mixHex(MONTH_LIGHT, MONTH_DEEP, z.to) }))
+const MONTH_KIND = /month|30_?day|thirty_day/i
+
+// The week and month bars are 1px lines in a BAR_H row, their zone markers
+// BAR_H tall as in the session bar, each with a gap under it.
+const THIN_H = 1
+const THIN_GAP = 3 // px between a thin bar and the bar under it
+const THIN_BOX = BAR_H + THIN_GAP
+
+function thinSvg(segs: Seg[], share: number, id: string): string {
+  const fill = Math.max(0, Math.min(1, share / 100))
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${THIN_BOX}">${barSvg(segs, fill, id, BAR_H, THIN_H)}</svg>`
+}
+
 function limitColor(share: number): string {
   return (LIMIT_SEGS.find(z => share < z.to) ?? LIMIT_SEGS[LIMIT_SEGS.length - 1]!).color
 }
@@ -270,7 +310,8 @@ function untilText(ms: number): string {
   return h > 0 ? `${h} h ${m % 60} min` : `${m} min`
 }
 
-type LimitView = { fill: number; color: string; left: string; right: string; alt: string }
+// `until` and `clock` are `right` in two parts, so the clock time can stand out from the countdown.
+type LimitView = { fill: number; color: string; left: string; right: string; alt: string; until?: string; clock?: string }
 
 function limitView(l: SessionLimit): LimitView {
   // Past the reset time the old figure no longer holds: a fresh window.
@@ -279,21 +320,29 @@ function limitView(l: SessionLimit): LimitView {
   }
   const fill = Math.max(0, Math.min(1, l.percent / 100))
   const pct = `${Math.round(l.percent)}%`
-  const at = l.resetClock ? ` [${l.resetClock}]` : ''
+  const at = l.resetClock ? ` ${l.resetClock}` : ''
   const right = l.resetsAt === null ? '' : `resets in ${untilText(l.resetsAt - l.now)}${at}`
-  return { fill, color: limitColor(fill), left: pct, right, alt: `Session ${pct} used${right ? `, ${right}` : ''}` }
+  const until = l.resetsAt === null ? undefined : `resets in ${untilText(l.resetsAt - l.now)}`
+  return {
+    fill, color: limitColor(fill), left: pct, right, alt: `Session ${pct} used${right ? `, ${right}` : ''}`,
+    ...(until ? { until } : {}), ...(until && l.resetClock ? { clock: l.resetClock } : {}),
+  }
 }
 
 // Reads the 5-hour window from the same figures the status line has.
 async function measureLimit($: EngineInterface, rateLimits: ReadonlyArray<{ kind: string; percentUsed: number; resetsAt?: string }>): Promise<void> {
   const five = rateLimits.find(r => r.kind === 'five_hour')
+  const week = rateLimits.find(r => r.kind === 'seven_day')
+  const month = rateLimits.find(r => MONTH_KIND.test(r.kind))
   const now = await $.clock.now()
   const resetsAt = five?.resetsAt ? Date.parse(five.resetsAt) : NaN
   const at = Number.isNaN(resetsAt) ? null : resetsAt
   // The clock time is worked out only when the reset time changes.
   const old = await read($, sessionLimit)
   const resetClock = at === null ? undefined : old?.resetsAt === at && old.resetClock ? old.resetClock : await clockTime($, at)
-  const next: SessionLimit | null = five ? { percent: five.percentUsed, resetsAt: at, now, ...(resetClock ? { resetClock } : {}) } : null
+  const next: SessionLimit | null = five
+    ? { percent: five.percentUsed, resetsAt: at, now, ...(resetClock ? { resetClock } : {}), ...(week ? { week: week.percentUsed } : {}), ...(month ? { month: month.percentUsed } : {}) }
+    : null
   await update($, sessionLimit, () => next)
 }
 
@@ -347,19 +396,35 @@ async function measure($: EngineInterface): Promise<void> {
 }
 
 
-// The pane id an earlier version opened; closed on start so it doesn't linger.
-const OLD_PANE = 'context-pane'
+const ICON_SWITCHES = '⚙' // opens the row of switches
+const SWITCHES_KEY = 'switches'
 
-export const register: Register = on => {
+// One figure of the usage caption: a dim label and a coloured value.
+type Figure = { label: string; value: string; color: string }
+
+// The ✕ on the cache row and the Cache switch both go through setCacheHidden,
+// which also stops keep warm; the other bars just switch.
+async function toggleBar($: EngineInterface, id: BarId): Promise<boolean> {
+  const isOn = !(await readShown($))[id]
+  if (id === 'cache') await setCacheHidden($, !isOn)
+  else await setBar($, id, isOn)
+  return isOn
+}
+
+const HELP =
+  'Show or hide the context row. "month", "week", "session", "context" or "cache" switches one bar, "switches" opens the switches, ' +
+  '"1h" / "5m" sets the cache timer, "auto" reads it from the chat again, "keepwarm" / "keepwarm off" keeps the cache warm, "demo" runs one 60 s countdown'
+
+export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'context-pane',
-      description: 'Show or hide the context row. "1h" / "5m" sets the cache timer, "cache" shows or hides the cache bar, "keepwarm" / "keepwarm off" keeps the cache warm, "demo" one 60 s countdown for filming, "auto" reads the cache length from the chat again',
-      argumentHint: '[1h|5m|auto|cache|keepwarm|keepwarm off|demo]',
+      description: HELP,
+      argumentHint: '[month|week|session|context|cache|switches|1h|5m|auto|keepwarm|keepwarm off|demo]',
       immediate: true,
     })
     const result = await next(e)
-    await $.ui.close({ id: OLD_PANE }).catch(() => undefined)
+    await startBars($, options)
     await measure($).catch(() => undefined)
     await cacheStart($)
     $.clock.every(30_000, () => {
@@ -386,21 +451,6 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('ui.press', { plugin: 'context-pane', element: 'cache-keepwarm' }, async ($, e, next) => {
-    await toggleWarm($)
-    return next(e)
-  })
-
-  on('ui.press', { plugin: 'context-pane', element: 'cache-ttl' }, async ($, e, next) => {
-    await toggleTtl($)
-    return next(e)
-  })
-
-  on('ui.press', { plugin: 'context-pane', element: 'cache-hide' }, async ($, e, next) => {
-    await hideCache($)
-    return next(e)
-  })
-
   // Fires after each turn when the context moved.
   on('session.measure', async ($, e, next) => {
     if (e.changed.includes('context') || e.changed.includes('rateLimits')) await measure($).catch(() => undefined)
@@ -409,13 +459,17 @@ export const register: Register = on => {
 
   on('command.run', { command: 'context-pane' }, async ($, e) => {
     const [arg = '', sub = ''] = e.args.trim().toLowerCase().split(/\s+/)
+    if (isBarId(arg)) {
+      const isOn = await toggleBar($, arg)
+      const label = BARS.find(b => b.id === arg)!.label
+      return { text: `${label} bar ${isOn ? 'shown' : `hidden. /context-pane ${arg} shows it`}.` }
+    }
+    if (arg === 'switches') {
+      await toggleSwitches($)
+      return { text: (await isSwitchesOpen($)) ? 'Switches shown under the bars.' : 'Switches closed.' }
+    }
     if (arg === 'keepwarm') return { text: await keepWarmCommand($, sub) }
     if (arg === '1h' || arg === '5m') return { text: await setTtl($, arg) }
-    if (arg === 'cache') {
-      const { hidden } = await readCache($)
-      await setCacheHidden($, !hidden)
-      return { text: hidden ? 'Cache bar shown.' : 'Cache bar hidden. /context-pane cache shows it.' }
-    }
     if (arg === 'demo' || arg === 'auto') {
       await setDemo($, arg === 'demo')
       return { text: arg === 'demo' ? 'Cache bar: one 60 s demo countdown, then back to your setting.' : 'Cache bar: length read from the chat again.' }
@@ -437,39 +491,83 @@ export const register: Register = on => {
     const drawn = await Promise.resolve(next(e)).catch(() => null)
     const rest = drawn && typeof drawn === 'object' && (drawn as { type?: string }).type !== 'engine' ? drawn : null
 
+    const show = await readShown($)
+    const isOpen = await isSwitchesOpen($)
+    const lim = await read($, sessionLimit)
+    const limit = lim && show.session ? limitView(lim) : null
+    const month = show.month ? lim?.month : undefined
+    const week = show.week ? lim?.week : undefined
+    const cache = await cacheView($, e.props.isWorking) // null while switched off
+
+    // The usage figures, in the order of the caption.
+    const figures: Figure[] = [
+      ...(limit ? [{ label: '5h Session', value: limit.left, color: limit.color }] : []),
+      ...(week !== undefined ? [{ label: 'Week Session', value: `${Math.round(week)}%`, color: WEEK_COLOR }] : []),
+      ...(month !== undefined ? [{ label: 'Month', value: `${Math.round(month)}%`, color: MONTH_COLOR }] : []),
+    ]
     const pc = zoneColor(snap)
     const used = snap.tokens === null ? '—' : short(snap.tokens)
     const pct = snap.percent === null ? '' : ` ${snap.percent}%`
     const cats = snap.top.map((r, i) => ({ label: r.name, value: short(r.tokens), color: LABEL_COLORS[i] ?? TICK }))
     if (snap.free !== null) cats.push({ label: 'Free', value: short(snap.free), color: FREE_COLOR })
-    const cache = await cacheView($, e.props.isWorking)
-    const lim = await read($, sessionLimit)
-    const limit = lim ? limitView(lim) : null
+    // The ⚙ sits at the end of the lowest row shown.
+    const last = cache ? 'cache' : show.context ? 'context' : figures.length ? 'usage' : 'none'
 
-    const noop = () => undefined
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const gear = <Button key={SWITCHES_KEY} label={ICON_SWITCHES} plain dimColor onPress={() => void toggleSwitches($)} />
+    const cacheButtons = cache
+      ? [
+          <Button key={TTL_KEY} label={cache.ttl} plain dimColor onPress={() => void toggleTtl($)} />,
+          cache.isWarming ? (
+            <Button key={KEEP_WARM_KEY} label={ICON_WARM} variant="primary" onPress={() => void toggleWarm($)} />
+          ) : (
+            <Button key={KEEP_WARM_KEY} label={ICON_WARM} plain dimColor onPress={() => void toggleWarm($)} />
+          ),
+          <Button key={HIDE_KEY} label={ICON_HIDE} plain dimColor onPress={() => void hideCache($)} />,
+        ]
+      : []
+    const switches = isOpen ? (
+      <Box flexDirection="row" alignItems="center" gap={1}>
+        <Text dimColor>Show</Text>
+        {BARS.map(b => (
+          <Button key={`bar-${b.id}`} label={`${show[b.id] ? '●' : '○'} ${b.label}`} plain dimColor={!show[b.id]} onPress={() => void toggleBar($, b.id)} />
+        ))}
+      </Box>
+    ) : null
 
     if (e.surface === 'terminal') {
-      const { Box, Text, Button } = $.ui.resolve(e)
       return (
         <Box flexDirection="column">
-          {limit ? (
-            <Text wrap="truncate-end">
-              <Text color={limit.color}>{textBar(limit.fill * 100)}</Text>
-              <Text dimColor> Session </Text>
-              <Text bold color={limit.color}>{limit.left}</Text>
-              {limit.right ? <Text dimColor>{'  ·  ' + limit.right}</Text> : null}
-            </Text>
-          ) : null}
-          <Text wrap="truncate-end">
-            <Text color={pc}>{textBar(snap.percent)}</Text>
-            <Text bold color={pc}> {used} / {short(snap.window)}{pct}</Text>
-            {cats.map(c => (
-              <Text key={c.label}>
-                <Text dimColor>{'  ·  ' + c.label + ' '}</Text>
-                <Text color={c.color}>{c.value}</Text>
+          {figures.length ? (
+            <Box flexDirection="row" gap={1}>
+              <Text wrap="truncate-end">
+                {limit ? <Text color={limit.color}>{textBar(limit.fill * 100) + ' '}</Text> : null}
+                {figures.map((f, i) => (
+                  <Text key={f.label}>
+                    <Text dimColor>{(i > 0 ? '   ' : '') + f.label + ' '}</Text>
+                    <Text bold color={f.color}>{f.value}</Text>
+                  </Text>
+                ))}
+                {limit?.right ? <Text dimColor>{'  ·  ' + limit.right}</Text> : null}
               </Text>
-            ))}
-          </Text>
+              {last === 'usage' ? gear : null}
+            </Box>
+          ) : null}
+          {show.context ? (
+            <Box flexDirection="row" gap={1}>
+              <Text wrap="truncate-end">
+                <Text color={pc}>{textBar(snap.percent)}</Text>
+                <Text bold color={pc}> {used} / {short(snap.window)}{pct}</Text>
+                {cats.map(c => (
+                  <Text key={c.label}>
+                    <Text dimColor>{'  ·  ' + c.label + ' '}</Text>
+                    <Text color={c.color}>{c.value}</Text>
+                  </Text>
+                ))}
+              </Text>
+              {last === 'context' ? gear : null}
+            </Box>
+          ) : null}
           {cache ? (
             <Box flexDirection="row" gap={1}>
               <Text wrap="truncate-end">
@@ -478,66 +576,86 @@ export const register: Register = on => {
                 <Text bold color={cache.color}>{cache.left}</Text>
                 {cache.right ? <Text color={WARM_ON}>{'  ·  ' + cache.right}</Text> : null}
               </Text>
-              <Button key={TTL_KEY} label={cache.ttl} plain dimColor onPress={noop} />
-              {cache.isWarming ? (
-                <Button key={KEEP_WARM_KEY} label={ICON_WARM} variant="primary" onPress={noop} />
-              ) : (
-                <Button key={KEEP_WARM_KEY} label={ICON_WARM} plain dimColor onPress={noop} />
-              )}
-              <Button key={HIDE_KEY} label={ICON_HIDE} plain dimColor onPress={noop} />
+              {cacheButtons}
+              {gear}
             </Box>
           ) : null}
+          {last === 'none' ? (
+            <Box flexDirection="row" gap={1}>
+              <Text dimColor>Context Pane: all bars off</Text>
+              {gear}
+            </Box>
+          ) : null}
+          {switches}
           {rest}
         </Box>
       )
     }
 
-    const { Box, Text, Svg, Button } = $.ui.resolve(e as typeof e & { surface: 'desktop' })
-
+    const { Svg } = $.ui.resolve(e as typeof e & { surface: 'desktop' })
     return (
       <Box flexDirection="column">
         <Box flexDirection="column" width="100%">
-          {/* The 5-hour usage window ("Current session") on top. */}
-          {limit ? (
+          {/* Usage on top: the month and week lines over the 5-hour session bar. */}
+          {figures.length ? (
             <Box flexDirection="column" width="100%" marginBottom={1}>
-              <Svg source={bandSvg(LIMIT_SEGS, limit.fill, limit.fill, 'context-pane-session')} height={BAND_H} alt={limit.alt} />
-              <Box flexDirection="row" width="100%" justifyContent="space-between" gap={1}>
+              {month !== undefined ? <Svg source={thinSvg(MONTH_SEGS, month, 'context-pane-month')} height={THIN_BOX} alt={`Month ${Math.round(month)}% used`} /> : null}
+              {week !== undefined ? <Svg source={thinSvg(WEEK_SEGS, week, 'context-pane-week')} height={THIN_BOX} alt={`Week ${Math.round(week)}% used`} /> : null}
+              {limit ? <Svg source={bandSvg(LIMIT_SEGS, limit.fill, limit.fill, 'context-pane-session')} height={BAND_H} alt={limit.alt} /> : null}
+              <Box flexDirection="row" width="100%" justifyContent="space-between" alignItems="center" gap={1}>
                 <Text size="caption" wrap="truncate-end" tabular>
-                  <Text dimColor>Session </Text>
-                  <Text weight="semibold" color={limit.color}>{limit.left}</Text>
+                  {figures.map((f, i) => (
+                    <Text key={f.label}>
+                      <Text dimColor>{(i > 0 ? '   ' : '') + f.label + ' '}</Text>
+                      <Text weight="semibold" color={f.color}>{f.value}</Text>
+                    </Text>
+                  ))}
                 </Text>
-                {limit.right ? (
-                  <Text size="caption" wrap="truncate-end" tabular>
-                    <Text dimColor>{limit.right}</Text>
-                  </Text>
-                ) : null}
+                <Box flexDirection="row" alignItems="center" gap={1}>
+                  {limit?.until ? (
+                    <Text size="caption" wrap="truncate-end" tabular>
+                      <Text dimColor>{`${limit.until} `}</Text>
+                      {limit.clock ? <Text>{limit.clock}</Text> : null}
+                    </Text>
+                  ) : limit?.right ? (
+                    <Text size="caption" dimColor>{limit.right}</Text>
+                  ) : null}
+                  {last === 'usage' ? gear : null}
+                </Box>
               </Box>
             </Box>
           ) : null}
-          <Svg
-            source={bandSvg(contextSegs(snap), (snap.tokens ?? 0) / snap.window, (snap.tokens ?? 0) / snap.window, 'context-pane-zones')}
-            height={BAND_H}
-            alt={`Context ${used} of ${short(snap.window)} tokens used${pct}`}
-          />
-          {/* The total on the left, the categories against the right edge. */}
-          <Box flexDirection="row" width="100%" justifyContent="space-between" gap={1}>
-            <Text size="caption" wrap="truncate-end" tabular>
-              <Text dimColor>Total </Text>
-              <Text weight="semibold" color={pc}>{used} / {short(snap.window)}{pct}</Text>
-            </Text>
-            <Text size="caption" wrap="truncate-end" tabular>
-              {cats.map((c, i) => (
-                <Text key={c.label}>
-                  <Text dimColor>{(i > 0 ? '  ·  ' : '') + c.label + ' '}</Text>
-                  <Text color={c.color} weight="medium">{c.value}</Text>
+          {show.context ? (
+            <Box flexDirection="column" width="100%">
+              <Svg
+                source={bandSvg(contextSegs(snap), (snap.tokens ?? 0) / snap.window, (snap.tokens ?? 0) / snap.window, 'context-pane-zones')}
+                height={BAND_H}
+                alt={`Context ${used} of ${short(snap.window)} tokens used${pct}`}
+              />
+              {/* The total on the left, the categories against the right edge. */}
+              <Box flexDirection="row" width="100%" justifyContent="space-between" alignItems="center" gap={1}>
+                <Text size="caption" wrap="truncate-end" tabular>
+                  <Text dimColor>Total </Text>
+                  <Text weight="semibold" color={pc}>{used} / {short(snap.window)}{pct}</Text>
                 </Text>
-              ))}
-            </Text>
-          </Box>
+                <Box flexDirection="row" alignItems="center" gap={1}>
+                  <Text size="caption" wrap="truncate-end" tabular>
+                    {cats.map((c, i) => (
+                      <Text key={c.label}>
+                        <Text dimColor>{(i > 0 ? '  ·  ' : '') + c.label + ' '}</Text>
+                        <Text color={c.color} weight="medium">{c.value}</Text>
+                      </Text>
+                    ))}
+                  </Text>
+                  {last === 'context' ? gear : null}
+                </Box>
+              </Box>
+            </Box>
+          ) : null}
           {cache ? (
-            <Box flexDirection="column" width="100%" marginTop={1}>
+            <Box flexDirection="column" width="100%" marginTop={show.context ? 1 : 0}>
               <Svg source={bandSvg(cache.segs, cache.fill, cache.now, 'context-pane-cache')} height={BAND_H} alt={cache.alt} />
-              <Box flexDirection="row" width="100%" justifyContent="space-between" gap={1}>
+              <Box flexDirection="row" width="100%" justifyContent="space-between" alignItems="center" gap={1}>
                 <Text size="caption" wrap="truncate-end" tabular>
                   <Text dimColor>Cache </Text>
                   <Text weight="semibold" color={cache.color}>{cache.left}</Text>
@@ -548,17 +666,19 @@ export const register: Register = on => {
                       <Text color={WARM_ON}>{cache.right}</Text>
                     </Text>
                   ) : null}
-                  <Button key={TTL_KEY} label={cache.ttl} plain dimColor onPress={noop} />
-                  {cache.isWarming ? (
-                <Button key={KEEP_WARM_KEY} label={ICON_WARM} variant="primary" onPress={noop} />
-              ) : (
-                <Button key={KEEP_WARM_KEY} label={ICON_WARM} plain dimColor onPress={noop} />
-              )}
-                  <Button key={HIDE_KEY} label={ICON_HIDE} plain dimColor onPress={noop} />
+                  {cacheButtons}
+                  {gear}
                 </Box>
               </Box>
             </Box>
           ) : null}
+          {last === 'none' ? (
+            <Box flexDirection="row" width="100%" justifyContent="space-between" alignItems="center" gap={1}>
+              <Text size="caption" dimColor>Context Pane: all bars off</Text>
+              {gear}
+            </Box>
+          ) : null}
+          {switches ? <Box marginTop={1}>{switches}</Box> : null}
         </Box>
         {/* The line only separates this row from other mods' rows beneath it. */}
         {rest ? <Svg source={DIVIDER_SVG} height={DIVIDER_H} alt="Divider" /> : null}
