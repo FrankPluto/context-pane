@@ -1,5 +1,7 @@
 # Context Pane
 
+![Context Pane above the Claude Code prompt: session, context and cache bars](docs/preview.png)
+
 A Claude Code mod that always shows how full the context window is, just above
 the prompt input, as the top row above every other mod's row.
 
