@@ -1,0 +1,14 @@
+{
+  "name": "context-pane",
+  "owner": {
+    "name": "Frank"
+  },
+  "description": "Context Pane: live session, context and prompt cache bars above the Claude Code prompt",
+  "plugins": [
+    {
+      "name": "context-pane",
+      "source": "./",
+      "description": "Live bars above the prompt: session usage, context window and prompt cache"
+    }
+  ]
+}

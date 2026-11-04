@@ -1,0 +1,9 @@
+{
+  "name": "context-pane",
+  "version": "1.4.0",
+  "description": "Live bars just above the prompt: your 5-hour session usage with its reset time, how full the context window is with recall zones (SHARP, GOOD, WEAKER, FORGETFUL, AUTO-COMPACT), and a prompt cache countdown with Keep warm",
+  "author": {
+    "name": "Frank"
+  },
+  "types": "./types/index.d.ts"
+}
