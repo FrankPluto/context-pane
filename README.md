@@ -45,3 +45,7 @@ under the SIL Open Font License (see `plugins/context-pane/fonts/OFL-Tiny5.txt`)
 The full manual, with every setting and the `/context-pane` command, is in [plugins/context-pane/README.md](plugins/context-pane/README.md).
 
 Needs a Claude subscription (Pro or Max) for the usage bars.
+
+## License
+
+[MIT](LICENSE): free to use, copy and change, as long as the copyright notice stays. The Tiny5 font keeps its own SIL Open Font License.
