@@ -1,0 +1,47 @@
+{
+  "name": "context-pane",
+  "version": "2.0.0",
+  "description": "Live bars just above the prompt: your week and 5-hour session usage (and a monthly window when one is reported) and how full the context window is with recall zones (SHARP, GOOD, WEAKER, FORGETFUL, AUTO-COMPACT). Switch each bar on or off, split the week bar into 5 or 7 days with day names from your reset day, and have replies read aloud.",
+  "author": {
+    "name": "Frank"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "showWeek": {
+      "type": "boolean",
+      "title": "Week bar",
+      "description": "The 7-day usage window as a 4 px bar with one section per day: green within pace, red ahead of it.",
+      "default": true
+    },
+    "showSession": {
+      "type": "boolean",
+      "title": "5h Session bar",
+      "description": "The 5-hour usage window, with when it resets.",
+      "default": true
+    },
+    "showContext": {
+      "type": "boolean",
+      "title": "Context bar",
+      "description": "How full the context window is, with recall zones.",
+      "default": true
+    },
+    "readAloud": {
+      "type": "boolean",
+      "title": "Read aloud",
+      "description": "Read each of Claude's replies aloud (macOS). The speaker next to ⚙ switches it.",
+      "default": true
+    },
+    "workWeek": {
+      "type": "boolean",
+      "title": "Week bar: work week",
+      "description": "Split the week bar into 5 days (work week, Mon–Fri) instead of 7 (full week). The ⚙ switches show it as 5d / 7d.",
+      "default": false
+    },
+    "showToday": {
+      "type": "boolean",
+      "title": "Week bar: Today marker",
+      "description": "A light grey bar, 1 px tall, just above the day section of the week bar we are in now. The ⚙ switches show it as Today.",
+      "default": true
+    }
+  }
+}

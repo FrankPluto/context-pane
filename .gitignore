@@ -1,0 +1,4 @@
+.DS_Store
+# session state and types the engine writes into each mod
+.claude/
+**/.claude-plugin/types/

@@ -1,0 +1,15 @@
+{
+  "name": "frank-mods",
+  "owner": {
+    "name": "Frank"
+  },
+  "description": "Frank's Claude Code mods",
+  "plugins": [
+    {
+      "name": "context-pane",
+      "source": "./plugins/context-pane",
+      "description": "Live bars just above the prompt: your week usage (one section per day from your reset day, with pace), your 5-hour session with its reset time, how full the context window is with recall zones, and Read aloud",
+      "version": "2.0.0"
+    }
+  ]
+}
