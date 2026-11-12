@@ -36,6 +36,9 @@ export type SessionLimit = {
   month?: number
 }
 
+/** The system the mod runs on, as Read aloud checks it at session start. */
+export type SpeechSystem = 'macos' | 'windows' | 'linux' | 'other'
+
 /** The bars a person can switch on and off, top to bottom. */
 export type BarId = 'week' | 'session' | 'context'
 
@@ -57,6 +60,10 @@ declare module 'claude-code' {
       readAloud: boolean | null
       /** True while a reply is being read aloud. */
       speaking: boolean
+      /** The system found at session start; null until checked. */
+      speechSystem: SpeechSystem | null
+      /** A speech tool was found on this computer; null until checked. */
+      canSpeak: boolean | null
       /** Days the week bar is split into: 7 (full week) or 5 (work week); null until the session starts (7). */
       weekDays: 5 | 7 | null
       /** The light grey bar above today's section of the week bar is shown; null until the session starts (shown). */

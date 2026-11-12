@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { BarId, ContextRow, ContextSnapshot, SessionLimit } from '../types'
 import { BARS, isBarId, isSwitchesOpen, readShown, readToday, readWeekDays, setBar, setWeekDays, startBars, startToday, startWeekDays, toggleSwitches, toggleToday, toggleWeekDays } from './bars'
-import { SPEAKER_KEY, speakReply, speakerView, startSpeech, toggleReadAloud } from './speech'
+import { hasVoice, noVoiceText, SPEAKER_KEY, speakReply, speakerView, startSpeech, toggleReadAloud } from './speech'
 import { TINY5_WOFF2_BASE64 } from './tiny5'
 
 const snapshot = atom({ plugin: 'context-pane', key: 'snapshot' } as const, null)
@@ -525,6 +525,7 @@ export const register: Register = (on, options) => {
       return { text: `${label} bar ${isOn ? 'shown' : `hidden. /context-pane ${arg} shows it`}.` }
     }
     if (arg === 'speak') {
+      if (!(await hasVoice($))) return { text: await noVoiceText($) }
       const isOn = await toggleReadAloud($)
       return { text: isOn ? 'Read aloud on: replies are read aloud.' : 'Read aloud off. /context-pane speak turns it on.' }
     }
@@ -597,8 +598,9 @@ export const register: Register = (on, options) => {
     // The speaker (Read aloud) sits just before ⚙, so both stay in sight whichever bars are shown.
     // It is a text button: "Speaking" when Read aloud is on, "Silent" (dim) when off.
     // On the desktop the ⚙ is a one-colour glyph at heading size.
+    // Without a speech tool on this computer the speaker is left out.
     const gear = [
-      <Button key={SPEAKER_KEY} label={speaker.label} plain dimColor={!speaker.isOn} onPress={() => void toggleReadAloud($)} />,
+      ...(speaker.isShown ? [<Button key={SPEAKER_KEY} label={speaker.label} plain dimColor={!speaker.isOn} onPress={() => void toggleReadAloud($)} />] : []),
       desktop ? (
         <Button key={SWITCHES_KEY} label="Settings" plain dimColor onPress={() => void toggleSwitches($)}>
           <Text size="heading">{ICON_SWITCHES_TEXT}</Text>

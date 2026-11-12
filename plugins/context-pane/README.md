@@ -1,6 +1,6 @@
 # Context Pane — manual
 
-*Version 2.0.0.* A Claude Code mod that keeps your usage and your context window
+*Version 2.1.0.* A Claude Code mod that keeps your usage and your context window
 in sight, as thin bars just above the prompt, and can read Claude's replies
 aloud. Every bar can be switched off, and a fresh install
 starts with all of them on.
@@ -117,13 +117,25 @@ it stays readable.
 ## Read aloud
 
 With Read aloud on, each of Claude's replies in the main chat is read aloud
-with macOS `say`, from start to finish. Code blocks, link addresses and
-formatting symbols are skipped. A new reply cuts off one still being read, and
+from start to finish. Code blocks, link addresses and formatting symbols are
+skipped. A new reply cuts off one still being read, and
 switching it off stops the reading at once. Helpers' replies and interrupted
 replies are not read. It is on after install. Its switch is the **Speaking /
 Silent** button beside ⚙ (it is not in the settings row), or
-`/context-pane speak`. The voice is the one set in System Settings →
-Accessibility → Spoken Content.
+`/context-pane speak`.
+
+When a chat starts, the mod checks which system it runs on and uses that
+system's own speech:
+
+| System | Speech | Voice |
+|---|---|---|
+| macOS | `say` | System Settings → Accessibility → Spoken Content |
+| Windows | Windows' built-in speech (System.Speech, through PowerShell) | Settings → Time & language → Speech |
+| Linux | The first of `espeak-ng`, `espeak` or `spd-say` that is installed | The tool's default voice |
+
+On Linux without any of them, the **Speaking / Silent** button is hidden and
+`/context-pane speak` says what to install (for example
+`sudo apt install espeak-ng`); start a new chat afterwards.
 
 ## Switching things on and off
 
@@ -165,7 +177,7 @@ Saved per user, read again at the start of every chat.
 | `showWeek` | Week bar | on | The 7-day usage window as a 4 px bar with one section per day: green within pace, red ahead of it. |
 | `showSession` | 5h Session bar | on | The 5-hour usage window, with when it resets. |
 | `showContext` | Context bar | on | How full the context window is, with recall zones. |
-| `readAloud` | Read aloud | on | Read each of Claude's replies aloud (macOS). The speaker next to ⚙ switches it. |
+| `readAloud` | Read aloud | on | Read each of Claude's replies aloud (macOS, Windows and Linux). The speaker next to ⚙ switches it. |
 | `workWeek` | Week bar: work week | off | Split the week bar into 5 days (work week, Mon–Fri) instead of 7 (full week). The ⚙ switches show it as 5d / 7d. |
 | `showToday` | Week bar: Today marker | on | A light grey bar, 1 px tall, just above the day section of the week bar we are in now. The ⚙ switches show it as Today. |
 
@@ -191,7 +203,8 @@ The mod is one hooks module (`hooks/register.tsx`) with helpers beside it.
 - Claude Code 2.1.287 or newer in the terminal, or 2.1.286 or newer in the
   desktop Code tab.
 - A Claude subscription (Pro or Max) for the usage lines and the session bar.
-- macOS for Read aloud (it uses the built-in `say`).
+- For Read aloud: macOS or Windows as they come, or Linux with `espeak-ng`,
+  `espeak` or `spd-say` installed.
 
 ## Install
 
@@ -221,7 +234,7 @@ then restart. (Bump `version` in `.claude-plugin/plugin.json` and in
 
 ```
 claude plugin validate  "<this folder>"   # checks the manifest and the module
-claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (46 tests)
+claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (50 tests)
 ```
 
 The tests mount the real row on the terminal and the desktop and check what it
