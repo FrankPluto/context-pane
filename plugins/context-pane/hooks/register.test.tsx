@@ -5,7 +5,10 @@ type TestDollar = Parameters<Extract<Parameters<typeof test>[1], (...args: never
 
 // Everything outside the mod, answered beneath it: usage, the session id, the
 // system commands, files, the store and toasts.
-function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () => unknown[]; dow?: number } = {}) {
+type Os = 'macos' | 'windows' | 'linux' | 'unknown'
+
+function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () => unknown[]; dow?: number; os?: Os; linuxTools?: string[] } = {}) {
+  const os = opts.os ?? 'macos'
   const files: Record<string, string> = {}
   const store: Record<string, unknown> = opts.store ?? {}
   const toasts: string[] = []
@@ -17,7 +20,12 @@ function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () 
   on('prompt.submit', async ($, e) => ({ text: (e as { text: string }).text }) as never)
   on('command.register', async () => ({ value: undefined }) as never)
   on('session.id', async () => ({ value: 'sid' }) as never)
-  on('env.get', async () => ({ value: '/Users/test' }) as never)
+  // Windows is told by its OS variable; the other variables read as a home folder.
+  on('env.get', async ($, e) => {
+    const name = (e as { name: string }).name
+    if (name === 'OS') return { value: os === 'windows' ? 'Windows_NT' : undefined } as never
+    return { value: '/Users/test' } as never
+  })
   on('session.usage', async () =>
     ({
       value: {
@@ -33,9 +41,19 @@ function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () 
   )
   on('process.run', async ($, e) => {
     const argv = (e as { argv: string[] }).argv
-    if (argv[0] === 'pkill') {
+    if (argv[0] === 'spd-say' && argv[1] === '--cancel') {
       killed.push(argv.join(' '))
       return { value: { exitCode: 0, stdout: '', stderr: '' } } as never
+    }
+    if (argv[0] === 'uname') {
+      // macOS and Linux by name; Windows has no uname, and an unknown system names something else.
+      if (os === 'windows') throw new Error('uname: not found')
+      return { value: { exitCode: 0, stdout: os === 'macos' ? 'Darwin\n' : os === 'linux' ? 'Linux\n' : 'FreeBSD\n', stderr: '' } } as never
+    }
+    if (argv[1] === '--version') {
+      // A speech tool answers only when the test installs it.
+      if (!(opts.linuxTools ?? []).includes(argv[0]!)) return { value: { exitCode: 127, stdout: '', stderr: `${argv[0]}: not found\n` } } as never
+      return { value: { exitCode: 0, stdout: `${argv[0]} 1.0\n`, stderr: '' } } as never
     }
     if (argv[0] === 'date' && argv.includes('+%u')) {
       // The weekday the week window started on, when a test gives one; else the command fails.
@@ -345,7 +363,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`the speaker reads replies aloud and is the Read aloud switch (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { config, killed } = setup(on)
+    const { config } = setup(on)
     const spoken: string[] = []
     on('process.spawn', async function* (_: unknown, e: unknown) {
       const { argv, input } = e as { argv: string[]; input?: string }
@@ -373,7 +391,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await v.press({ key: 'read-aloud' })
     v = await mount()
     expect(await speakerSays(v), 'off: Silent').toBe('Silent')
-    expect(killed.length, 'reading stopped').toBeGreaterThan(0)
     expect(config['context-pane.readAloud'], 'saved as a setting').toBe(false)
     await $.turn.complete({ answer: 'Quiet now.', reason: 'answer' } as never)
     await clock.settle()
@@ -387,6 +404,90 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await run($, 'speak'), '/context-pane speak').toContain('Read aloud on')
     v = await mount()
     expect(await speakerSays(v), 'and Speaking again').toBe('Speaking')
+  })
+
+  /** Starts a chat on `os` and reads one reply; what was spoken, and the mounted row. */
+  async function speakOn($: TestDollar, on: TestOn, os: Os, linuxTools: string[] = []) {
+    const { killed } = setup(on, { os, linuxTools })
+    const spoken: { argv: string[]; input?: string }[] = []
+    on('process.spawn', async function* (_: unknown, e: unknown) {
+      const { argv, input } = e as { argv: string[]; input?: string }
+      spoken.push({ argv, input })
+      return { value: { code: 0, signal: null } }
+    } as never)
+    const clock = mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    await $.turn.complete({ answer: 'Hej, **världen**.', reason: 'answer' } as never)
+    await clock.settle()
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    return { spoken, v, killed }
+  }
+
+  test(`macOS reads with say (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { spoken, v } = await speakOn($, on, 'macos')
+    expect(spoken, 'say reads the reply').toEqual([{ argv: ['say'], input: 'Hej, världen.' }])
+    expect(await speakerSays(v), 'Speaking').toBe('Speaking')
+  })
+
+  test(`Windows reads with its built-in speech through PowerShell (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { spoken, v } = await speakOn($, on, 'windows')
+    expect(spoken.length, 'one reading').toBe(1)
+    expect(spoken[0]!.argv[0], 'PowerShell').toBe('powershell.exe')
+    expect(spoken[0]!.argv.at(-1), 'System.Speech, reading UTF-8').toMatch(/InputEncoding.*UTF8.*System\.Speech.*SpeechSynthesizer/)
+    expect(spoken[0]!.input, 'the reply as words, å ä ö kept').toBe('Hej, världen.')
+    expect(await speakerSays(v), 'Speaking').toBe('Speaking')
+  })
+
+  test(`Linux reads with espeak-ng when it is installed (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { spoken } = await speakOn($, on, 'linux', ['espeak-ng', 'espeak', 'spd-say'])
+    expect(spoken, 'espeak-ng comes first').toEqual([{ argv: ['espeak-ng', '--stdin'], input: 'Hej, världen.' }])
+  })
+
+  test(`Linux falls back to espeak, then spd-say (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { spoken } = await speakOn($, on, 'linux', ['spd-say'])
+    expect(spoken, 'spd-say when it is the only one').toEqual([{ argv: ['spd-say', '--wait', '--pipe-mode'], input: 'Hej, världen.' }])
+  })
+
+  test(`Linux without a speech tool hides the speaker and says what to install (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { spoken, v } = await speakOn($, on, 'linux')
+    expect(spoken, 'nothing read').toEqual([])
+    expect(await speakerSays(v), 'no speaker button').toBeUndefined()
+    expect(await run($, 'speak'), '/context-pane speak says what to install').toContain('install espeak-ng')
+  })
+
+  test(`an unknown system hides the speaker (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { spoken, v } = await speakOn($, on, 'unknown')
+    expect(spoken, 'nothing read').toEqual([])
+    expect(await speakerSays(v), 'no speaker button').toBeUndefined()
+    expect(await v.find({ key: 'switches' }), 'the ⚙ stays').toBeDefined()
+  })
+
+  test(`Silent and a new reply stop the reading on every system (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { killed } = setup(on, { os: 'linux', linuxTools: ['spd-say'] })
+    const ended: string[] = []
+    // A reading that goes on until the mod closes it: closing the stream aborts the child's signal.
+    on('process.spawn', async function* (_: unknown, e: unknown, next: { signal: AbortSignal }) {
+      const { input } = e as { input?: string }
+      try {
+        yield { stream: 'stdout', text: input ?? '' }
+        await new Promise(done => next.signal.addEventListener('abort', done))
+        return { value: { code: null, signal: 'SIGTERM' } }
+      } finally {
+        ended.push(input ?? '')
+      }
+    } as never)
+    const clock = mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    await $.turn.complete({ answer: 'First.', reason: 'answer' } as never)
+    await clock.settle()
+    await $.turn.complete({ answer: 'Second.', reason: 'answer' } as never)
+    await clock.settle()
+    expect(ended, 'a new reply cuts off the one being read').toEqual(['First.'])
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    await v.press({ key: 'read-aloud' })
+    await clock.settle()
+    expect(ended, 'Silent stops the reading').toEqual(['First.', 'Second.'])
+    expect(killed, 'and spd-say is cancelled in speech-dispatcher too').toEqual(['spd-say --cancel', 'spd-say --cancel'])
   })
 
   test(`Read aloud saved off stays off in a new chat (${surface})`, { timeoutMs: 30000, options: { readAloud: false } }, async ($, on) => {

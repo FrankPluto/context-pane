@@ -5,7 +5,7 @@ A Claude Code mod that puts live bars just above the prompt, so you can see at a
 - **Week bar**: your weekly usage, one section per day, starting on the day your week resets. Green is within pace, red is ahead of it, with days left counting down to the reset.
 - **5h Session**: your 5-hour usage window and when it resets.
 - **Context**: how full the context window is, with recall zones (SHARP, GOOD, WEAKER, FORGETFUL, AUTO-COMPACT).
-- **Read aloud**: a speaker that reads replies aloud (macOS).
+- **Read aloud**: a speaker that reads replies aloud (macOS, Windows and Linux).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="plugins/context-pane/docs/context-pane-dark.png">

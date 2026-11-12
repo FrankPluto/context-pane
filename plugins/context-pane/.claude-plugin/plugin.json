@@ -1,6 +1,6 @@
 {
   "name": "context-pane",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Live bars just above the prompt: your week and 5-hour session usage (and a monthly window when one is reported) and how full the context window is with recall zones (SHARP, GOOD, WEAKER, FORGETFUL, AUTO-COMPACT). Switch each bar on or off, split the week bar into 5 or 7 days with day names from your reset day, and have replies read aloud.",
   "author": {
     "name": "Frank Mortensen"
@@ -28,7 +28,7 @@
     "readAloud": {
       "type": "boolean",
       "title": "Read aloud",
-      "description": "Read each of Claude's replies aloud (macOS). The speaker next to ⚙ switches it.",
+      "description": "Read each of Claude's replies aloud (macOS, Windows and Linux). The speaker next to ⚙ switches it.",
       "default": true
     },
     "workWeek": {
