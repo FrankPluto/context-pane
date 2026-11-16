@@ -34,6 +34,8 @@ export type SessionLimit = {
   weekResetClock?: string
   /** How much of a monthly usage window is used, 0 to 100; absent when none is reported. */
   month?: number
+  /** Readings of the 5-hour window in this window, [ms, percent], oldest first: the forecast's input. */
+  samples?: Array<[number, number]>
 }
 
 /** The system the mod runs on, as Read aloud checks it at session start. */

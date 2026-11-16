@@ -1,6 +1,6 @@
 # Context Pane — manual
 
-*Version 2.1.1.* A Claude Code mod that keeps your usage and your context window
+*Version 2.2.0.* A Claude Code mod that keeps your usage and your context window
 in sight, as thin bars just above the prompt, and can read Claude's replies
 aloud. Every bar can be switched off, and a fresh install
 starts with all of them on.
@@ -19,7 +19,7 @@ supported.*
 | # | Part | What it tells you |
 |---|---|---|
 | 1 | **Week bar** | Your 7-day usage, one section per day (7, or 5 for a work week). Green is usage within pace, red is usage ahead of it. A light grey bar above a section marks today. See [The week bar](#the-week-bar). |
-| 2 | **5h Session bar** | How much of your 5-hour usage window ("Current session" on the usage page) is used, and when it resets: a countdown and the clock time, e.g. "resets in 2 h 14 min 20:32". The caption above it also carries the week's figures. |
+| 2 | **5h Session bar** | How much of your 5-hour usage window ("Current session" on the usage page) is used, and when it resets: a countdown and the clock time, e.g. "resets in 2 h 14 min 20:32". If you would hit the limit before then, it says when: "limit in ~1 h 10 min". The caption above it also carries the week's figures. |
 | 3 | **Context bar** | How full the context window is, with Claude's recall zones. Under it: the total on the left, the three biggest categories and the free space on the right. |
 | 4 | **Speaking / Silent** | Read aloud. A text button: **Speaking** when on, **Silent** when off; press it to switch. It sits just before ⚙. |
 | 5 | **⚙** | Opens and closes the settings row. It sits at the end of the lowest row shown. |
@@ -95,6 +95,13 @@ are:
 | Under 70% | OK | green |
 | 70–90% | HIGH | orange |
 | 90–100% | LIMIT | red |
+
+**Forecast.** When the pace of the last hour would use up the window before it
+resets, the caption says so after the figure: `62% · limit in ~1 h 10 min`. It
+is orange, and red under 30 minutes. The pace is the rise from the reading an
+hour ago (or the first one in this chat) to now, so it needs at least 10 minutes
+and a rise of 2% before it shows, and it eases off while you are idle. When the
+window lasts until the reset, nothing is shown.
 
 The figures come from the same source as the status line, so they show only on
 a Claude subscription (Pro or Max). With an API key there are no usage figures,
@@ -235,7 +242,7 @@ then restart. (Bump `version` in `.claude-plugin/plugin.json` and in
 
 ```
 claude plugin validate  "<this folder>"   # checks the manifest and the module
-claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (52 tests)
+claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (56 tests)
 ```
 
 The tests mount the real row on the terminal and the desktop and check what it

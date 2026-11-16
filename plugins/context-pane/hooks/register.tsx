@@ -342,6 +342,52 @@ function limitColor(share: number): string {
   return (LIMIT_SEGS.find(z => share < z.to) ?? LIMIT_SEGS[LIMIT_SEGS.length - 1]!).color
 }
 
+// ---- Forecast ---------------------------------------------------------------
+// When the 5-hour window will run out at the pace of the last hour. Each change
+// in the figure is kept as a reading; the pace is the rise from the reading an
+// hour ago (or the first one) to now. Idle time counts too, so the forecast
+// eases off while you are away.
+const FORECAST_LOOKBACK = 60 * 60_000
+const FORECAST_MIN_SPAN = 10 * 60_000 // too little time says nothing about the pace
+const FORECAST_MIN_RISE = 2 // percentage points
+const SAMPLES_KEPT = 2 * 60 * 60_000
+const SAMPLES_MAX = 60
+const FORECAST_SOON = 30 * 60_000 // under this the note turns red
+const FORECAST_WARN = '#FA7B17'
+const FORECAST_ALERT = '#EA4335'
+
+// The readings with this one added: kept only for the same window, and only when the figure moved.
+function addSample(old: SessionLimit | null, resetsAt: number | null, now: number, percent: number): Array<[number, number]> {
+  let samples = old && old.resetsAt === resetsAt ? [...(old.samples ?? [])] : []
+  const last = samples[samples.length - 1]
+  // A lower figure means the window started over, whatever the reset time says.
+  if (last && percent < last[1]) samples = []
+  const newest = samples[samples.length - 1]
+  if (!newest || percent !== newest[1]) samples.push([now, percent])
+  // Keep the last two hours, but always the newest reading before them, as the baseline.
+  const since = now - SAMPLES_KEPT
+  const firstKept = samples.findIndex(([t]) => t >= since)
+  if (firstKept > 0) samples = samples.slice(firstKept - 1)
+  return samples.slice(-SAMPLES_MAX)
+}
+
+// Milliseconds until the window is used up at the current pace, or null when that is
+// not before the reset, or too little is known.
+function forecastMs(l: SessionLimit): number | null {
+  const s = l.samples ?? []
+  const lastReading = s[s.length - 1]
+  if (!lastReading || l.resetsAt === null || l.now >= l.resetsAt) return null
+  const percent = lastReading[1]
+  if (percent >= 100) return null
+  const start = l.now - FORECAST_LOOKBACK
+  const base = [...s].reverse().find(([t]) => t <= start) ?? s[0]!
+  const span = l.now - base[0]
+  const rise = percent - base[1]
+  if (span < FORECAST_MIN_SPAN || rise < FORECAST_MIN_RISE) return null
+  const left = ((100 - percent) / rise) * span
+  return l.now + left < l.resetsAt ? left : null
+}
+
 // "2 h 14 min", "14 min", "under 1 min"
 function untilText(ms: number): string {
   const m = Math.ceil(ms / 60_000)
@@ -351,7 +397,7 @@ function untilText(ms: number): string {
 }
 
 // `until` and `clock` are `right` in two parts, so the clock time can stand out from the countdown.
-type LimitView = { fill: number; color: string; left: string; right: string; alt: string; until?: string; clock?: string }
+type LimitView = { fill: number; color: string; left: string; right: string; alt: string; until?: string; clock?: string; forecast?: string; forecastColor?: string }
 
 function limitView(l: SessionLimit): LimitView {
   // Past the reset time the old figure no longer holds: a fresh window.
@@ -363,9 +409,13 @@ function limitView(l: SessionLimit): LimitView {
   const at = l.resetClock ? ` ${l.resetClock}` : ''
   const right = l.resetsAt === null ? '' : `resets in ${untilText(l.resetsAt - l.now)}${at}`
   const until = l.resetsAt === null ? undefined : `resets in ${untilText(l.resetsAt - l.now)}`
+  const ahead = forecastMs(l)
+  const forecast = ahead === null ? undefined : `limit in ~${untilText(ahead)}`
   return {
-    fill, color: limitColor(fill), left: pct, right, alt: `Session ${pct} used${right ? `, ${right}` : ''}`,
+    fill, color: limitColor(fill), left: pct, right,
+    alt: `Session ${pct} used${right ? `, ${right}` : ''}${forecast ? `, at this pace ${forecast}` : ''}`,
     ...(until ? { until } : {}), ...(until && l.resetClock ? { clock: l.resetClock } : {}),
+    ...(forecast ? { forecast, forecastColor: ahead! < FORECAST_SOON ? FORECAST_ALERT : FORECAST_WARN } : {}),
   }
 }
 
@@ -399,6 +449,7 @@ async function measureLimit($: EngineInterface, rateLimits: ReadonlyArray<{ kind
         ...(weekStartDow ? { weekStartDow } : {}),
         ...(weekResetClock ? { weekResetClock } : {}),
         ...(month ? { month: month.percentUsed } : {}),
+        samples: addSample(old, at, now, five.percentUsed),
       }
     : null
   await update($, sessionLimit, () => next)
@@ -583,7 +634,9 @@ export const register: Register = (on, options) => {
 
     // The usage figures, in the order of the caption.
     const figures: Figure[] = [
-      ...(limit ? [{ label: '5h Session', value: limit.left, color: limit.color }] : []),
+      ...(limit
+        ? [{ label: '5h Session', value: limit.left, color: limit.color, ...(limit.forecast ? { note: limit.forecast, noteColor: limit.forecastColor } : {}) }]
+        : []),
       ...(week !== undefined
         ? [{
             label: 'Week Session',

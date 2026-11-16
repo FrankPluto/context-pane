@@ -3,7 +3,7 @@
 A Claude Code mod that puts live bars just above the prompt, so you can see at a glance how much you have left:
 
 - **Week bar**: your weekly usage, one section per day, starting on the day your week resets. Green is within pace, red is ahead of it, with days left counting down to the reset.
-- **5h Session**: your 5-hour usage window and when it resets.
+- **5h Session**: your 5-hour usage window, when it resets, and when you would hit the limit at your current pace.
 - **Context**: how full the context window is, with recall zones (SHARP, GOOD, WEAKER, FORGETFUL, AUTO-COMPACT).
 - **Read aloud**: a speaker that reads replies aloud (macOS, Windows and Linux).
 

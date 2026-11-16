@@ -1,6 +1,6 @@
 {
   "name": "context-pane",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "description": "Live bars just above the prompt: your week and 5-hour session usage (and a monthly window when one is reported) and how full the context window is with recall zones (SHARP, GOOD, WEAKER, FORGETFUL, AUTO-COMPACT). Switch each bar on or off, split the week bar into 5 or 7 days with day names from your reset day, and have replies read aloud.",
   "author": {
     "name": "Frank Mortensen"

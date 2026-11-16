@@ -17,6 +17,7 @@ function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () 
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('turn.start', async () => ({}) as never)
   on('turn.complete', async () => ({ text: '' }) as never)
+  on('session.measure', async ($, e) => ({ changed: (e as { changed: string[] }).changed }) as never)
   on('prompt.submit', async ($, e) => ({ text: (e as { text: string }).text }) as never)
   on('command.register', async () => ({ value: undefined }) as never)
   on('session.id', async () => ({ value: 'sid' }) as never)
@@ -573,6 +574,58 @@ for (const surface of surfaces) {
     v = await mount()
     expect(await v.find({ type: 'Text', text: /^0%$/ }), 'fresh window').toBeDefined()
     expect(await v.find({ text: /reset$/ }), 'says reset').toBeDefined()
+  })
+
+  test(`the 5h bar forecasts when the window runs out at this pace (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const start = 1_000_000
+    const reset = new Date(start + 4 * 60 * 60_000).toISOString()
+    let percent = 10
+    setup(on, { limits: () => [{ kind: 'five_hour', percentUsed: percent, resetsAt: reset }] })
+    const clock = mock.clock(on, { now: start })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const mount = () => $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    const reading = async (p: number, minutes: number) => {
+      await clock.advance(minutes * 60_000)
+      percent = p
+      await $.session.measure({ changed: ['rateLimits'] } as never)
+    }
+    const note = async () => {
+      const v = await mount()
+      return (await v.find({ type: 'Text', text: /^ · limit in/ })) as { text: string; props: { color?: unknown } } | undefined
+    }
+
+    expect(await note(), 'one reading says nothing about the pace').toBeUndefined()
+    await reading(20, 20)
+    // 10% in 20 min: 0.5%/min, 80% left: 160 min, before the reset 220 min away.
+    expect((await note())?.text, 'a forecast once there is enough to go on').toBe(' · limit in ~2 h 40 min')
+    await reading(30, 20)
+    // 20% in 40 min: 0.5%/min, 70% left: 140 min, before the reset 200 min away.
+    const n = await note()
+    expect(n?.text, 'the pace over the readings so far').toBe(' · limit in ~2 h 20 min')
+    expect(n?.props.color, 'orange while there is time').toBe('#FA7B17')
+    await reading(90, 20)
+    // 80% in 60 min: 10% left at 1.33%/min is 7.5 min.
+    expect((await note())?.props.color, 'red under half an hour').toBe('#EA4335')
+    expect((await note())?.text).toBe(' · limit in ~8 min')
+    // A lower figure is a new window: the forecast starts over.
+    await reading(5, 1)
+    expect(await note(), 'a new window starts over').toBeUndefined()
+  })
+
+  test(`no forecast when the window lasts until the reset (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const start = 1_000_000
+    // An hour in, the reset is 30 min away; 10% an hour leaves plenty.
+    const reset = new Date(start + 90 * 60_000).toISOString()
+    let percent = 50
+    setup(on, { limits: () => [{ kind: 'five_hour', percentUsed: percent, resetsAt: reset }] })
+    const clock = mock.clock(on, { now: start })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    await clock.advance(60 * 60_000)
+    percent = 60
+    await $.session.measure({ changed: ['rateLimits'] } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ type: 'Text', text: /^60%$/ }), 'the new figure is shown').toBeDefined()
+    expect(await v.find({ type: 'Text', text: /limit in/ }), 'no forecast').toBeUndefined()
   })
 
   test(`no session bar without a subscription's figures (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
