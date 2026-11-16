@@ -7,11 +7,12 @@ type TestDollar = Parameters<Extract<Parameters<typeof test>[1], (...args: never
 // system commands, files, the store and toasts.
 type Os = 'macos' | 'windows' | 'linux' | 'unknown'
 
-function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () => unknown[]; dow?: number; os?: Os; linuxTools?: string[] } = {}) {
+function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () => unknown[]; dow?: number; os?: Os; linuxTools?: string[]; cost?: number } = {}) {
   const os = opts.os ?? 'macos'
   const files: Record<string, string> = {}
   const store: Record<string, unknown> = opts.store ?? {}
   const toasts: string[] = []
+  const notes: string[] = []
   const config: Record<string, unknown> = {}
   const killed: string[] = []
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
@@ -37,6 +38,7 @@ function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () 
           breakdown: { categories: [{ name: 'Messages', tokens: 150_000, kind: 'used' }, { name: 'Free space', tokens: 800_000, kind: 'free' }] },
         },
         rateLimits: opts.limits?.() ?? [],
+        ...(opts.cost !== undefined ? { cost: { usd: opts.cost } } : {}),
       },
     }) as never,
   )
@@ -87,6 +89,10 @@ function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () 
     config[key] = value
     return { value } as never
   })
+  on('ui.notify', async ($, e) => {
+    notes.push((e as { text: string }).text)
+    return { value: { isSent: true, channel: 'auto' } } as never
+  })
   on('ui.toast', async ($, e) => {
     toasts.push((e as { text: string }).text)
     return { value: undefined } as never
@@ -95,7 +101,7 @@ function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () 
     const { Text } = $.ui.resolve(e)
     return <Text>REST</Text>
   })
-  return { files, store, toasts, config, killed }
+  return { files, store, toasts, config, killed, notes }
 }
 
 const props = (isWorking = false) => ({ isWorking, hasSurvey: false, maxRows: 10, bodyColumns: 120 }) as never
@@ -330,7 +336,7 @@ for (const surface of surfaces) {
     const names = ((await v.findAll({ type: 'Button' })) as { text: string }[]).map(b => b.text)
     const row = names.slice(names.indexOf('• Week'))
     expect(row, 'the week controls together, then the other bars; no Read aloud, its button is beside ⚙').toEqual([
-      '• Week', '7d', '• Today', '• 5h Session', '• Context',
+      '• Week', '7d', '• Today', '• 5h Session', '• Context', '◦ Alerts',
     ])
     expect(names.some(n => n.includes('●') || n.includes('○')), 'only the small dot and ring').toBe(false)
     expect(names.includes('Week: 7d'), 'no "Week: 7d"').toBe(false)
@@ -626,6 +632,61 @@ for (const surface of surfaces) {
     const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
     expect(await v.find({ type: 'Text', text: /^60%$/ }), 'the new figure is shown').toBeDefined()
     expect(await v.find({ type: 'Text', text: /limit in/ }), 'no forecast').toBeUndefined()
+  })
+
+  test(`with an API key the context row shows the session's cost, marked an estimate (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    setup(on, { cost: 1.237 })
+    mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ type: 'Text', text: /^ +· +Cost est\. $/ }), 'labelled an estimate').toBeDefined()
+    expect(await v.find({ type: 'Text', text: /^\$1\.24$/ }), 'in dollars').toBeDefined()
+  })
+
+  test(`on a subscription there is no cost line (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    setup(on, { cost: 1.237, limits: () => [{ kind: 'five_hour', percentUsed: 10 }] })
+    mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ type: 'Text', text: /Cost est/ }), 'no cost').toBeUndefined()
+  })
+
+  test(`alerts are off until switched on, then warn once at 80% and 95% and tell the reset (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const start = 1_000_000
+    const resetAt = start + 2 * 60 * 60_000
+    let percent = 85
+    const { notes, config, store } = setup(on, { limits: () => [{ kind: 'five_hour', percentUsed: percent, resetsAt: new Date(resetAt).toISOString() }] })
+    const clock = mock.clock(on, { now: start })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const measure = () => $.session.measure({ changed: ['rateLimits'] } as never)
+    expect(notes, 'off by default: nothing sent').toEqual([])
+
+    expect(await run($, 'alerts'), '/context-pane alerts').toContain('Alerts on')
+    expect(config['context-pane.alerts'], 'saved as a setting').toBe(true)
+    await measure()
+    expect(notes, 'the 80% warning').toEqual(['5-hour window at 85%, resets in 2 h 0 min.'])
+    await measure()
+    expect(notes.length, 'not again while it sits there').toBe(1)
+    percent = 97
+    await clock.advance(30 * 60_000)
+    await measure()
+    expect(notes[1], 'the 95% warning').toBe('5-hour window at 97%, resets in 1 h 30 min.')
+    expect(store.alerted, 'kept across chats').toEqual({ window: resetAt, levels: [80, 95], resetTold: false })
+    await clock.advance(91 * 60_000)
+    expect(notes[2], 'told when it resets').toBe('Your 5-hour window has reset.')
+    await clock.advance(60_000)
+    expect(notes.length, 'only once').toBe(3)
+  })
+
+  test(`a new chat does not warn again for the same window (${surface})`, { timeoutMs: 30000, options: { alerts: true } }, async ($, on) => {
+    const resetAt = 1_000_000 + 60 * 60_000
+    const { notes } = setup(on, {
+      store: { alerted: { window: resetAt, levels: [80], resetTold: false } },
+      limits: () => [{ kind: 'five_hour', percentUsed: 85, resetsAt: new Date(resetAt).toISOString() }],
+    })
+    mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    expect(notes, 'already warned').toEqual([])
   })
 
   test(`no session bar without a subscription's figures (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

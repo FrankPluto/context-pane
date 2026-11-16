@@ -13,6 +13,8 @@ export type ContextSnapshot = {
   free: number | null
   /** Where auto-compaction runs, in tokens; absent when it is off or unknown. */
   compactAt?: number
+  /** What the session has cost in US dollars, as /cost estimates it; only off a subscription (API key), absent otherwise. */
+  costUsd?: number
 }
 
 export type SessionLimit = {
@@ -70,6 +72,8 @@ declare module 'claude-code' {
       weekDays: 5 | 7 | null
       /** The light grey bar above today's section of the week bar is shown; null until the session starts (shown). */
       showToday: boolean | null
+      /** Alerts switched on; null until the session starts (off). */
+      alerts: boolean | null
     }
   }
 }

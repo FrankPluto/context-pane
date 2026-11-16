@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { BarId, ContextRow, ContextSnapshot, SessionLimit } from '../types'
 import { BARS, isBarId, isSwitchesOpen, readShown, readToday, readWeekDays, setBar, setWeekDays, startBars, startToday, startWeekDays, toggleSwitches, toggleToday, toggleWeekDays } from './bars'
+import { checkAlerts, readAlerts, startAlerts, toggleAlerts } from './alerts'
 import { hasVoice, noVoiceText, SPEAKER_KEY, speakReply, speakerView, startSpeech, toggleReadAloud } from './speech'
 import { TINY5_WOFF2_BASE64 } from './tiny5'
 
@@ -57,6 +58,12 @@ function short(n: number): string {
   if (n >= 1_000) return `${+(n / 1_000).toFixed(1)}k`
   return String(n)
 }
+
+// "$1.24", "<$0.01": the session's cost, an estimate as /cost works it out.
+function usd(n: number): string {
+  return n > 0 && n < 0.01 ? '<$0.01' : '$' + n.toFixed(2)
+}
+const COST_LABEL = 'Cost est. '
 
 // The colour of the zone the context is in now: the same as that zone's label on the bar.
 function zoneColor(s: ContextSnapshot): string {
@@ -453,6 +460,7 @@ async function measureLimit($: EngineInterface, rateLimits: ReadonlyArray<{ kind
       }
     : null
   await update($, sessionLimit, () => next)
+  if (next) await checkAlerts($, next, limitView(next).until)
 }
 
 // The hooks module's own clock runs in UTC, so the local time comes from the
@@ -494,7 +502,9 @@ async function tickLimit($: EngineInterface): Promise<void> {
   const l = await read($, sessionLimit)
   if (!l) return
   const now = await $.clock.now()
-  await update($, sessionLimit, () => ({ ...l, now }))
+  const next = { ...l, now }
+  await update($, sessionLimit, () => next)
+  await checkAlerts($, next, limitView(next).until)
 }
 
 // Terminal fallback: the terminal draws no SVG.
@@ -506,7 +516,7 @@ function textBar(p: number | null): string {
 
 // Reads the same figures /context shows. `summary` estimates locally: no API calls.
 async function measure($: EngineInterface): Promise<void> {
-  const { context, rateLimits } = await $.session.usage({ breakdown: 'summary' })
+  const { context, rateLimits, cost } = await $.session.usage({ breakdown: 'summary' })
   await measureLimit($, rateLimits ?? []).catch(() => undefined)
   const b = context.breakdown
   const cats = b?.categories ?? []
@@ -523,6 +533,8 @@ async function measure($: EngineInterface): Promise<void> {
     top,
     free: freeRow ? freeRow.tokens : null,
     ...(b?.isAutoCompactEnabled && b.autoCompactThreshold ? { compactAt: b.autoCompactThreshold } : {}),
+    // On a subscription usage is not billed in dollars, so the cost shows only with an API key (no rate limits).
+    ...(cost && !(rateLimits ?? []).length ? { costUsd: cost.usd } : {}),
   }
   await update($, snapshot, () => next)
 }
@@ -545,14 +557,15 @@ async function toggleBar($: EngineInterface, id: BarId): Promise<boolean> {
 
 const HELP =
   'Show or hide the context row. "week", "session" or "context" switches one bar, "switches" opens the switches, ' +
-  '"speak" switches Read aloud, "5d" / "7d" splits the week bar into a work week or a full week, "today" switches the grey bar above today'
+  '"speak" switches Read aloud, "5d" / "7d" splits the week bar into a work week or a full week, "today" switches the grey bar above today, ' +
+  '"alerts" switches notifications at 80% and 95% of the 5-hour window'
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'context-pane',
       description: HELP,
-      argumentHint: '[week|session|context|switches|speak|5d|7d|today]',
+      argumentHint: '[week|session|context|switches|speak|5d|7d|today|alerts]',
       immediate: true,
     })
     const result = await next(e)
@@ -560,6 +573,7 @@ export const register: Register = (on, options) => {
     await startSpeech($, options)
     await startWeekDays($, options)
     await startToday($, options)
+    await startAlerts($, options)
     await measure($).catch(() => undefined)
     $.clock.every(30_000, () => {
       void tickLimit($).catch(() => undefined)
@@ -591,6 +605,10 @@ export const register: Register = (on, options) => {
       if (!(await hasVoice($))) return { text: await noVoiceText($) }
       const isOn = await toggleReadAloud($)
       return { text: isOn ? 'Read aloud on: replies are read aloud.' : 'Read aloud off. /context-pane speak turns it on.' }
+    }
+    if (arg === 'alerts') {
+      const isOn = await toggleAlerts($)
+      return { text: isOn ? 'Alerts on: a notification at 80% and 95% of the 5-hour window, and when it resets.' : 'Alerts off. /context-pane alerts turns them on.' }
     }
     if (arg === 'today') {
       const isOn = await toggleToday($)
@@ -630,6 +648,7 @@ export const register: Register = (on, options) => {
     const days = await readWeekDays($)
     const pace = week !== undefined && lim ? weekPace(lim, days) : null
     const todayOn = await readToday($)
+    const alertsOn = await readAlerts($)
     const todaySection = todayOn ? (pace?.today ?? null) : null
 
     // The usage figures, in the order of the caption.
@@ -697,6 +716,7 @@ export const register: Register = (on, options) => {
         <Button key="switch-week-days" label={`${days}d`} plain onPress={() => void toggleWeekDays($)} />
         {small('switch-today', `${mark(todayOn)} Today`, !todayOn, () => void toggleToday($))}
         {BARS.filter(b => b.id !== 'week').map(barButton)}
+        {small('switch-alerts', `${mark(alertsOn)} Alerts`, !alertsOn, () => void toggleAlerts($))}
       </Box>
     ) : null
 
@@ -724,6 +744,12 @@ export const register: Register = (on, options) => {
               <Text wrap="truncate-end">
                 <Text color={pc}>{textBar(snap.percent)}</Text>
                 <Text bold color={pc}> {used} / {short(snap.window)}{pct}</Text>
+                {snap.costUsd !== undefined ? (
+                  <Text>
+                    <Text dimColor>{'  ·  ' + COST_LABEL}</Text>
+                    <Text>{usd(snap.costUsd)}</Text>
+                  </Text>
+                ) : null}
                 {cats.map(c => (
                   <Text key={c.label}>
                     <Text dimColor>{'  ·  ' + c.label + ' '}</Text>
@@ -798,6 +824,12 @@ export const register: Register = (on, options) => {
                 <Text size="caption" wrap="truncate-end" tabular>
                   <Text dimColor>Total </Text>
                   <Text weight="semibold" color={pc}>{used} / {short(snap.window)}{pct}</Text>
+                  {snap.costUsd !== undefined ? (
+                    <Text>
+                      <Text dimColor>{'  ·  ' + COST_LABEL}</Text>
+                      <Text weight="medium">{usd(snap.costUsd)}</Text>
+                    </Text>
+                  ) : null}
                 </Text>
                 <Box flexDirection="row" alignItems="center" gap={1}>
                   <Text size="caption" wrap="truncate-end" tabular>
