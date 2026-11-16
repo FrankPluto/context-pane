@@ -108,7 +108,9 @@ const run = async ($: TestDollar, args: string) => JSON.stringify(await $.comman
 type Mounted = { findAll(q: { type: 'Svg' }): Promise<Array<{ props: Record<string, unknown> }>>; find(q: { type: 'Text'; text: RegExp }): Promise<{ props: { color?: unknown } } | undefined> }
 
 
-for (const surface of ['desktop', 'terminal'] as const) {
+const surfaces = ['desktop', 'terminal'] as const
+
+for (const surface of surfaces) {
   test(`a monthly window adds a 1px month bar above the week bar (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const limits: unknown[] = [{ kind: 'five_hour', percentUsed: 10 }, { kind: 'seven_day', percentUsed: 40 }, { kind: 'monthly', percentUsed: 12 }]
     setup(on, { limits: () => limits })
@@ -205,7 +207,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(svg.props.source, 'today is full strength').toMatch(/fill="#34A853" fill-opacity="1">THURSDAY</)
       expect(svg.props.alt, 'alt says where it starts').toContain('7 days from TUESDAY')
       await run($, '5d')
-      v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+      // Widened back: inside this branch `surface` narrows to desktop, but `v` holds either surface's drawing.
+      v = await $.ui.mount({ plugin: 'context-pane', surface: surface as typeof surfaces[number], component: 'AbovePrompt', props: props() })
       const work = [...(await weekSvgOf(v))!.props.source.matchAll(/<text[^>]*>([A-Z]+)<\/text>/g)].map(m => m[1])
       expect(work, 'work week from Tuesday, Monday last').toEqual(['TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'MONDAY'])
     }
@@ -491,7 +494,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const { input } = e as { input?: string }
       try {
         yield { stream: 'stdout', text: input ?? '' }
-        await new Promise(done => next.signal.addEventListener('abort', done))
+        await new Promise<void>(done => next.signal.addEventListener('abort', () => done()))
         return { value: { code: null, signal: 'SIGTERM' } }
       } finally {
         ended.push(input ?? '')
