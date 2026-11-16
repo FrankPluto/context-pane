@@ -175,7 +175,8 @@ for (const surface of surfaces) {
     await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
     const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
     // 3 of 7 days are due: 42.9%. 55% is 12% ahead, with 4.5 days left until the reset and 45% left.
-    const note = await v.find({ type: 'Text', text: /^ · ahead 12% · 4\.5 d left · 10%\/day$/ })
+    // 55% in 2.5 days is 22%/day: the 45% left lasts 2.05 days, into day 5 (Friday), before the reset.
+    const note = await v.find({ type: 'Text', text: /^ · ahead 12% · runs out Fri · 4\.5 d left · 10%\/day$/ })
     expect(note, 'ahead, days left and per-day budget').toBeDefined()
     expect(note!.props.color, 'the note is red').toBe('#EA4335')
     expect((await v.find({ type: 'Text', text: /^55%$/ }))?.props.color, 'the figure is red').toBe('#EA4335')
@@ -236,6 +237,15 @@ for (const surface of surfaces) {
     }
   })
 
+  test(`far ahead of pace, the week says it runs out today (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    // 95% in 2.5 days is 38%/day: the 5% left lasts about 3 hours, before today ends.
+    setup(on, { limits: () => weekLimits(95), dow: 1 })
+    mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ type: 'Text', text: /^ · ahead 52% · runs out today · 4\.5 d left · 1%\/day$/ }), 'runs out today').toBeDefined()
+  })
+
   test(`within pace stays green and shows what is left (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     setup(on, { limits: () => weekLimits(30), dow: 1 })
     mock.clock(on, { now: 1_000_000 })
@@ -255,7 +265,7 @@ for (const surface of surfaces) {
     await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
     expect(await run($, '5d'), '/context-pane 5d').toContain('work week')
     let v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
-    expect(await v.find({ type: 'Text', text: /ahead 10% · 2\.5 d left · 12%\/day/ }), 'ahead of the 60% due').toBeDefined()
+    expect(await v.find({ type: 'Text', text: /ahead 10% · runs out Thu · 2\.5 d left · 12%\/day/ }), 'ahead of the 60% due').toBeDefined()
     if (surface === 'desktop') {
       expect((await weekSvgOf(v))!.props.source, '5 sections').toMatch(/(fill-opacity="0.25"[\s\S]*){5}/)
       expect((await weekSvgOf(v))!.props.alt, 'Wednesday is the third day').toContain('day 3 now')
@@ -268,7 +278,7 @@ for (const surface of surfaces) {
     mock.clock(on, { now: 1_000_000 })
     await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
     const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
-    expect(await v.find({ type: 'Text', text: /ahead 10% · 4\.0 d left · 18%\/day/ }), 'weekend is not a day').toBeDefined()
+    expect(await v.find({ type: 'Text', text: /ahead 10% · runs out Wed · 4\.0 d left · 18%\/day/ }), 'weekend is not a day').toBeDefined()
     // No work day is under way, so there is no day marker.
     if (surface === 'desktop') expect((await weekSvgOf(v))!.props.source, 'no marker on a weekend').not.toContain('class="td"')
   })
@@ -280,7 +290,7 @@ for (const surface of surfaces) {
     mock.clock(on, { now: 1_000_000 })
     await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
     const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
-    expect(await v.find({ type: 'Text', text: /ahead 5% · 1\.0 d left · 15%\/day/ }), 'Monday still to come').toBeDefined()
+    expect(await v.find({ type: 'Text', text: /ahead 5% · runs out Mon · 1\.0 d left · 15%\/day/ }), 'Monday still to come').toBeDefined()
     expect(await v.find({ type: 'Text', text: /last day/ }), 'not the last day').toBeUndefined()
   })
 

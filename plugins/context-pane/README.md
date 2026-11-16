@@ -56,12 +56,13 @@ that point is **green**. Usage beyond it is **red**: you have already spent the
 budget of days still to come. Unused parts of a section are grey.
 
 **The caption** next to *Week Session* reads like
-`55% · ahead 12% · 4.5 d left · 10%/day`:
+`55% · ahead 12% · runs out Fri · 4.5 d left · 10%/day`:
 
 | Part | Meaning |
 |---|---|
 | `55%` | Share of the weekly limit used. Green while within pace, red once ahead. |
 | `ahead 12%` | Usage minus what is due so far. Shown only when you are ahead. |
+| `runs out Fri` | When you are ahead: the day the limit runs out if you go on at your average pace so far (counted days only), or `today`. Shown only when that is before the reset. |
 | `4.5 d left` | Counted days left until the reset, with what is left of today as a fraction: `7.0 d left` just after a reset, `6.3 d left` that evening. In a work week weekend hours do not count. |
 | `10%/day` | What is left of the limit, spread over those days. |
 | `last day · 20% left` | Shown on the last counted day. `no work days left` on a weekend after the last one. |
@@ -69,7 +70,9 @@ budget of days still to come. Unused parts of a section are grey.
 **Worked example (full week, 55% used, on day 3).** Three days are due, which is
 3 × 14.3% = 42.9%. You have used 55%, so you are 12% ahead: the first 42.9% is
 green and the next 12% is red, in day 4. The 45% that is left, over the 4.5 days
-left until the reset, is 10% a day.
+left until the reset, is 10% a day. At the pace so far (55% in 2.5 days, 22% a day) the
+45% left lasts about 2 days, so the limit runs out on day 5: `runs out Fri` for a
+week that resets on Monday.
 
 **Today.** A light grey bar, 1 px tall, sits just above today's section. It is
 still; nothing in the bar moves. It is hidden on a weekend in a work week, when
@@ -252,7 +255,7 @@ then restart. (Bump `version` in `.claude-plugin/plugin.json` and in
 
 ```
 claude plugin validate  "<this folder>"   # checks the manifest and the module
-claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (64 tests)
+claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (66 tests)
 ```
 
 The tests mount the real row on the terminal and the desktop and check what it

@@ -265,6 +265,28 @@ const slotDow = (startDow: number, i: number) => ((startDow - 1 + i) % 7) + 1
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
 
+// The forecast needs half a counted day of use before the pace means anything.
+const RUN_OUT_MIN_DAYS = 0.5
+
+/**
+ * "Thu", or "today": the day the weekly limit runs out if use goes on at the
+ * average pace so far (counted days only), or undefined when it lasts to the reset.
+ * `since` is days since the window started; `slot` the 24 h slot we are in.
+ */
+function runOutDay(p: number, since: number, slot: number, isWork: (i: number) => boolean, startDow: number): string | undefined {
+  let spent = isWork(slot) ? since - slot : 0
+  for (let i = 0; i < slot; i++) if (isWork(i)) spent++
+  if (spent < RUN_OUT_MIN_DAYS || p <= 0 || p >= 100) return undefined
+  let need = (100 - p) / (p / spent) // counted days of use left at this pace
+  for (let i = slot; i < 7; i++) {
+    if (!isWork(i)) continue
+    const room = i === slot ? slot + 1 - since : 1
+    if (need <= room) return i === slot ? 'today' : DAY_WORDS[slotDow(startDow, i) - 1]
+    need -= room
+  }
+  return undefined
+}
+
 function weekPace(l: SessionLimit, days: 5 | 7): WeekPace | null {
   if (l.week === undefined) return null
   const p = Math.max(0, Math.min(100, l.week))
@@ -274,6 +296,7 @@ function weekPace(l: SessionLimit, days: 5 | 7): WeekPace | null {
   let elapsed = 0
   let todayIsWork = false
   let left = 0 // counted days left until the reset, with a fraction for what is left of today
+  let runsOut: string | undefined // the weekday the limit runs out at this pace, when that is before the reset
   if (known) {
     const since = (l.now - (l.weekResetsAt! - WEEK_MS)) / DAY_MS
     const slot = Math.max(0, Math.min(6, Math.floor(since)))
@@ -282,6 +305,7 @@ function weekPace(l: SessionLimit, days: 5 | 7): WeekPace | null {
     todayIsWork = isWork(slot)
     if (todayIsWork) left += Math.max(0, slot + 1 - since)
     for (let i = slot + 1; i < 7; i++) if (isWork(i)) left++
+    runsOut = runOutDay(p, since, slot, isWork, l.weekStartDow!)
   }
   const cells: WeekCell[] = Array.from({ length: days }, (_, j) => {
     const filled = clamp01((p - j * share) / share)
@@ -297,6 +321,7 @@ function weekPace(l: SessionLimit, days: 5 | 7): WeekPace | null {
   // Days left counts down to the reset: "7.0 d left" just after it, "6.3 d left" that evening.
   const parts: string[] = []
   if (ahead >= 0.5) parts.push(`ahead ${Math.round(ahead)}%`)
+  if (ahead >= 0.5 && runsOut) parts.push(`runs out ${runsOut}`)
   // "last day" only while that day is under way; on a weekend before Monday it still reads "1.0 d left".
   if (left > 1 || (left > 0 && !todayIsWork)) parts.push(`${left.toFixed(1)} d left · ${Math.round(Math.max(0, 100 - p) / left)}%/day`)
   else if (left > 0) parts.push(`last day · ${Math.round(Math.max(0, 100 - p))}% left`)
