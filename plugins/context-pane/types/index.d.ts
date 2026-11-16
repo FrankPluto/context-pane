@@ -13,6 +13,8 @@ export type ContextSnapshot = {
   free: number | null
   /** Where auto-compaction runs, in tokens; absent when it is off or unknown. */
   compactAt?: number
+  /** What the session has cost in US dollars, as /cost estimates it; only off a subscription (API key), absent otherwise. */
+  costUsd?: number
 }
 
 export type SessionLimit = {
@@ -34,6 +36,8 @@ export type SessionLimit = {
   weekResetClock?: string
   /** How much of a monthly usage window is used, 0 to 100; absent when none is reported. */
   month?: number
+  /** Readings of the 5-hour window in this window, [ms, percent], oldest first: the forecast's input. */
+  samples?: Array<[number, number]>
 }
 
 /** The system the mod runs on, as Read aloud checks it at session start. */
@@ -68,6 +72,8 @@ declare module 'claude-code' {
       weekDays: 5 | 7 | null
       /** The light grey bar above today's section of the week bar is shown; null until the session starts (shown). */
       showToday: boolean | null
+      /** Alerts switched on; null until the session starts (off). */
+      alerts: boolean | null
     }
   }
 }

@@ -7,16 +7,18 @@ type TestDollar = Parameters<Extract<Parameters<typeof test>[1], (...args: never
 // system commands, files, the store and toasts.
 type Os = 'macos' | 'windows' | 'linux' | 'unknown'
 
-function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () => unknown[]; dow?: number; os?: Os; linuxTools?: string[] } = {}) {
+function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () => unknown[]; dow?: number; os?: Os; linuxTools?: string[]; cost?: number } = {}) {
   const os = opts.os ?? 'macos'
   const files: Record<string, string> = {}
   const store: Record<string, unknown> = opts.store ?? {}
   const toasts: string[] = []
+  const notes: string[] = []
   const config: Record<string, unknown> = {}
   const killed: string[] = []
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('turn.start', async () => ({}) as never)
   on('turn.complete', async () => ({ text: '' }) as never)
+  on('session.measure', async ($, e) => ({ changed: (e as { changed: string[] }).changed }) as never)
   on('prompt.submit', async ($, e) => ({ text: (e as { text: string }).text }) as never)
   on('command.register', async () => ({ value: undefined }) as never)
   on('session.id', async () => ({ value: 'sid' }) as never)
@@ -36,6 +38,7 @@ function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () 
           breakdown: { categories: [{ name: 'Messages', tokens: 150_000, kind: 'used' }, { name: 'Free space', tokens: 800_000, kind: 'free' }] },
         },
         rateLimits: opts.limits?.() ?? [],
+        ...(opts.cost !== undefined ? { cost: { usd: opts.cost } } : {}),
       },
     }) as never,
   )
@@ -54,6 +57,12 @@ function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () 
       // A speech tool answers only when the test installs it.
       if (!(opts.linuxTools ?? []).includes(argv[0]!)) return { value: { exitCode: 127, stdout: '', stderr: `${argv[0]}: not found\n` } } as never
       return { value: { exitCode: 0, stdout: `${argv[0]} 1.0\n`, stderr: '' } } as never
+    }
+    // Windows has no date program: the local time comes from PowerShell, which counts Sunday as 0.
+    if (argv[0] === 'date' && os === 'windows') throw new Error('date: not found')
+    if (argv[0] === 'powershell.exe' && /FromUnixTimeSeconds/.test(argv[4] ?? '')) {
+      if (/DayOfWeek/.test(argv[4]!)) return { value: opts.dow ? { exitCode: 0, stdout: `${opts.dow % 7}\r\n`, stderr: '' } : { exitCode: 1, stdout: '', stderr: '' } } as never
+      return { value: { exitCode: 0, stdout: '20:32\r\n', stderr: '' } } as never
     }
     if (argv[0] === 'date' && argv.includes('+%u')) {
       // The weekday the week window started on, when a test gives one; else the command fails.
@@ -80,6 +89,10 @@ function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () 
     config[key] = value
     return { value } as never
   })
+  on('ui.notify', async ($, e) => {
+    notes.push((e as { text: string }).text)
+    return { value: { isSent: true, channel: 'auto' } } as never
+  })
   on('ui.toast', async ($, e) => {
     toasts.push((e as { text: string }).text)
     return { value: undefined } as never
@@ -88,7 +101,7 @@ function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () 
     const { Text } = $.ui.resolve(e)
     return <Text>REST</Text>
   })
-  return { files, store, toasts, config, killed }
+  return { files, store, toasts, config, killed, notes }
 }
 
 const props = (isWorking = false) => ({ isWorking, hasSurvey: false, maxRows: 10, bodyColumns: 120 }) as never
@@ -102,7 +115,9 @@ const run = async ($: TestDollar, args: string) => JSON.stringify(await $.comman
 type Mounted = { findAll(q: { type: 'Svg' }): Promise<Array<{ props: Record<string, unknown> }>>; find(q: { type: 'Text'; text: RegExp }): Promise<{ props: { color?: unknown } } | undefined> }
 
 
-for (const surface of ['desktop', 'terminal'] as const) {
+const surfaces = ['desktop', 'terminal'] as const
+
+for (const surface of surfaces) {
   test(`a monthly window adds a 1px month bar above the week bar (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const limits: unknown[] = [{ kind: 'five_hour', percentUsed: 10 }, { kind: 'seven_day', percentUsed: 40 }, { kind: 'monthly', percentUsed: 12 }]
     setup(on, { limits: () => limits })
@@ -160,7 +175,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
     const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
     // 3 of 7 days are due: 42.9%. 55% is 12% ahead, with 4.5 days left until the reset and 45% left.
-    const note = await v.find({ type: 'Text', text: /^ · ahead 12% · 4\.5 d left · 10%\/day$/ })
+    // 55% in 2.5 days is 22%/day: the 45% left lasts 2.05 days, into day 5 (Friday), before the reset.
+    const note = await v.find({ type: 'Text', text: /^ · ahead 12% · runs out Fri · 4\.5 d left · 10%\/day$/ })
     expect(note, 'ahead, days left and per-day budget').toBeDefined()
     expect(note!.props.color, 'the note is red').toBe('#EA4335')
     expect((await v.find({ type: 'Text', text: /^55%$/ }))?.props.color, 'the figure is red').toBe('#EA4335')
@@ -199,10 +215,35 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(svg.props.source, 'today is full strength').toMatch(/fill="#34A853" fill-opacity="1">THURSDAY</)
       expect(svg.props.alt, 'alt says where it starts').toContain('7 days from TUESDAY')
       await run($, '5d')
-      v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+      // Widened back: inside this branch `surface` narrows to desktop, but `v` holds either surface's drawing.
+      v = await $.ui.mount({ plugin: 'context-pane', surface: surface as typeof surfaces[number], component: 'AbovePrompt', props: props() })
       const work = [...(await weekSvgOf(v))!.props.source.matchAll(/<text[^>]*>([A-Z]+)<\/text>/g)].map(m => m[1])
       expect(work, 'work week from Tuesday, Monday last').toEqual(['TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'MONDAY'])
     }
+  })
+
+  test(`Windows: the reset clock time and the day names come from PowerShell (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    // Resets on a Sunday, which .NET counts as 0: the sections run Sun to Sat.
+    const start = 1_000_000
+    setup(on, { os: 'windows', dow: 7, limits: () => [{ kind: 'five_hour', percentUsed: 10, resetsAt: new Date(start + 90 * 60_000).toISOString() }, { kind: 'seven_day', percentUsed: 30, resetsAt: weekReset }] })
+    mock.clock(on, { now: start })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ text: surface === 'desktop' ? /^20:32$/ : /resets in 1 h 30 min 20:32/ }), 'the reset as a clock time').toBeDefined()
+    if (surface === 'desktop') {
+      const svg = (await weekSvgOf(v))!
+      const names = [...svg.props.source.matchAll(/<text[^>]*>([A-Z]+)<\/text>/g)].map(m => m[1])
+      expect(names, 'Sunday first').toEqual(['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'])
+    }
+  })
+
+  test(`far ahead of pace, the week says it runs out today (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    // 95% in 2.5 days is 38%/day: the 5% left lasts about 3 hours, before today ends.
+    setup(on, { limits: () => weekLimits(95), dow: 1 })
+    mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ type: 'Text', text: /^ · ahead 52% · runs out today · 4\.5 d left · 1%\/day$/ }), 'runs out today').toBeDefined()
   })
 
   test(`within pace stays green and shows what is left (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -224,7 +265,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
     expect(await run($, '5d'), '/context-pane 5d').toContain('work week')
     let v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
-    expect(await v.find({ type: 'Text', text: /ahead 10% · 2\.5 d left · 12%\/day/ }), 'ahead of the 60% due').toBeDefined()
+    expect(await v.find({ type: 'Text', text: /ahead 10% · runs out Thu · 2\.5 d left · 12%\/day/ }), 'ahead of the 60% due').toBeDefined()
     if (surface === 'desktop') {
       expect((await weekSvgOf(v))!.props.source, '5 sections').toMatch(/(fill-opacity="0.25"[\s\S]*){5}/)
       expect((await weekSvgOf(v))!.props.alt, 'Wednesday is the third day').toContain('day 3 now')
@@ -237,7 +278,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     mock.clock(on, { now: 1_000_000 })
     await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
     const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
-    expect(await v.find({ type: 'Text', text: /ahead 10% · 4\.0 d left · 18%\/day/ }), 'weekend is not a day').toBeDefined()
+    expect(await v.find({ type: 'Text', text: /ahead 10% · runs out Wed · 4\.0 d left · 18%\/day/ }), 'weekend is not a day').toBeDefined()
     // No work day is under way, so there is no day marker.
     if (surface === 'desktop') expect((await weekSvgOf(v))!.props.source, 'no marker on a weekend').not.toContain('class="td"')
   })
@@ -249,7 +290,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     mock.clock(on, { now: 1_000_000 })
     await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
     const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
-    expect(await v.find({ type: 'Text', text: /ahead 5% · 1\.0 d left · 15%\/day/ }), 'Monday still to come').toBeDefined()
+    expect(await v.find({ type: 'Text', text: /ahead 5% · runs out Mon · 1\.0 d left · 15%\/day/ }), 'Monday still to come').toBeDefined()
     expect(await v.find({ type: 'Text', text: /last day/ }), 'not the last day').toBeUndefined()
   })
 
@@ -305,7 +346,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const names = ((await v.findAll({ type: 'Button' })) as { text: string }[]).map(b => b.text)
     const row = names.slice(names.indexOf('• Week'))
     expect(row, 'the week controls together, then the other bars; no Read aloud, its button is beside ⚙').toEqual([
-      '• Week', '7d', '• Today', '• 5h Session', '• Context',
+      '• Week', '7d', '• Today', '• 5h Session', '• Context', '◦ Alerts',
     ])
     expect(names.some(n => n.includes('●') || n.includes('○')), 'only the small dot and ring').toBe(false)
     expect(names.includes('Week: 7d'), 'no "Week: 7d"').toBe(false)
@@ -470,7 +511,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const { input } = e as { input?: string }
       try {
         yield { stream: 'stdout', text: input ?? '' }
-        await new Promise(done => next.signal.addEventListener('abort', done))
+        await new Promise<void>(done => next.signal.addEventListener('abort', () => done()))
         return { value: { code: null, signal: 'SIGTERM' } }
       } finally {
         ended.push(input ?? '')
@@ -549,6 +590,113 @@ for (const surface of ['desktop', 'terminal'] as const) {
     v = await mount()
     expect(await v.find({ type: 'Text', text: /^0%$/ }), 'fresh window').toBeDefined()
     expect(await v.find({ text: /reset$/ }), 'says reset').toBeDefined()
+  })
+
+  test(`the 5h bar forecasts when the window runs out at this pace (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const start = 1_000_000
+    const reset = new Date(start + 4 * 60 * 60_000).toISOString()
+    let percent = 10
+    setup(on, { limits: () => [{ kind: 'five_hour', percentUsed: percent, resetsAt: reset }] })
+    const clock = mock.clock(on, { now: start })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const mount = () => $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    const reading = async (p: number, minutes: number) => {
+      await clock.advance(minutes * 60_000)
+      percent = p
+      await $.session.measure({ changed: ['rateLimits'] } as never)
+    }
+    const note = async () => {
+      const v = await mount()
+      return (await v.find({ type: 'Text', text: /^ · limit in/ })) as { text: string; props: { color?: unknown } } | undefined
+    }
+
+    expect(await note(), 'one reading says nothing about the pace').toBeUndefined()
+    await reading(20, 20)
+    // 10% in 20 min: 0.5%/min, 80% left: 160 min, before the reset 220 min away.
+    expect((await note())?.text, 'a forecast once there is enough to go on').toBe(' · limit in ~2 h 40 min')
+    await reading(30, 20)
+    // 20% in 40 min: 0.5%/min, 70% left: 140 min, before the reset 200 min away.
+    const n = await note()
+    expect(n?.text, 'the pace over the readings so far').toBe(' · limit in ~2 h 20 min')
+    expect(n?.props.color, 'orange while there is time').toBe('#FA7B17')
+    await reading(90, 20)
+    // 80% in 60 min: 10% left at 1.33%/min is 7.5 min.
+    expect((await note())?.props.color, 'red under half an hour').toBe('#EA4335')
+    expect((await note())?.text).toBe(' · limit in ~8 min')
+    // A lower figure is a new window: the forecast starts over.
+    await reading(5, 1)
+    expect(await note(), 'a new window starts over').toBeUndefined()
+  })
+
+  test(`no forecast when the window lasts until the reset (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const start = 1_000_000
+    // An hour in, the reset is 30 min away; 10% an hour leaves plenty.
+    const reset = new Date(start + 90 * 60_000).toISOString()
+    let percent = 50
+    setup(on, { limits: () => [{ kind: 'five_hour', percentUsed: percent, resetsAt: reset }] })
+    const clock = mock.clock(on, { now: start })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    await clock.advance(60 * 60_000)
+    percent = 60
+    await $.session.measure({ changed: ['rateLimits'] } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ type: 'Text', text: /^60%$/ }), 'the new figure is shown').toBeDefined()
+    expect(await v.find({ type: 'Text', text: /limit in/ }), 'no forecast').toBeUndefined()
+  })
+
+  test(`with an API key the context row shows the session's cost, marked an estimate (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    setup(on, { cost: 1.237 })
+    mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ type: 'Text', text: /^ +· +Cost est\. $/ }), 'labelled an estimate').toBeDefined()
+    expect(await v.find({ type: 'Text', text: /^\$1\.24$/ }), 'in dollars').toBeDefined()
+  })
+
+  test(`on a subscription there is no cost line (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    setup(on, { cost: 1.237, limits: () => [{ kind: 'five_hour', percentUsed: 10 }] })
+    mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ type: 'Text', text: /Cost est/ }), 'no cost').toBeUndefined()
+  })
+
+  test(`alerts are off until switched on, then warn once at 80% and 95% and tell the reset (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const start = 1_000_000
+    const resetAt = start + 2 * 60 * 60_000
+    let percent = 85
+    const { notes, config, store } = setup(on, { limits: () => [{ kind: 'five_hour', percentUsed: percent, resetsAt: new Date(resetAt).toISOString() }] })
+    const clock = mock.clock(on, { now: start })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const measure = () => $.session.measure({ changed: ['rateLimits'] } as never)
+    expect(notes, 'off by default: nothing sent').toEqual([])
+
+    expect(await run($, 'alerts'), '/context-pane alerts').toContain('Alerts on')
+    expect(config['context-pane.alerts'], 'saved as a setting').toBe(true)
+    await measure()
+    expect(notes, 'the 80% warning').toEqual(['5-hour window at 85%, resets in 2 h 0 min.'])
+    await measure()
+    expect(notes.length, 'not again while it sits there').toBe(1)
+    percent = 97
+    await clock.advance(30 * 60_000)
+    await measure()
+    expect(notes[1], 'the 95% warning').toBe('5-hour window at 97%, resets in 1 h 30 min.')
+    expect(store.alerted, 'kept across chats').toEqual({ window: resetAt, levels: [80, 95], resetTold: false })
+    await clock.advance(91 * 60_000)
+    expect(notes[2], 'told when it resets').toBe('Your 5-hour window has reset.')
+    await clock.advance(60_000)
+    expect(notes.length, 'only once').toBe(3)
+  })
+
+  test(`a new chat does not warn again for the same window (${surface})`, { timeoutMs: 30000, options: { alerts: true } }, async ($, on) => {
+    const resetAt = 1_000_000 + 60 * 60_000
+    const { notes } = setup(on, {
+      store: { alerted: { window: resetAt, levels: [80], resetTold: false } },
+      limits: () => [{ kind: 'five_hour', percentUsed: 85, resetsAt: new Date(resetAt).toISOString() }],
+    })
+    mock.clock(on, { now: 1_000_000 })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    expect(notes, 'already warned').toEqual([])
   })
 
   test(`no session bar without a subscription's figures (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

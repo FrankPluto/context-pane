@@ -1,6 +1,6 @@
 # Context Pane — manual
 
-*Version 2.1.0.* A Claude Code mod that keeps your usage and your context window
+*Version 2.2.0.* A Claude Code mod that keeps your usage and your context window
 in sight, as thin bars just above the prompt, and can read Claude's replies
 aloud. Every bar can be switched off, and a fresh install
 starts with all of them on.
@@ -19,11 +19,11 @@ supported.*
 | # | Part | What it tells you |
 |---|---|---|
 | 1 | **Week bar** | Your 7-day usage, one section per day (7, or 5 for a work week). Green is usage within pace, red is usage ahead of it. A light grey bar above a section marks today. See [The week bar](#the-week-bar). |
-| 2 | **5h Session bar** | How much of your 5-hour usage window ("Current session" on the usage page) is used, and when it resets: a countdown and the clock time, e.g. "resets in 2 h 14 min 20:32". The caption above it also carries the week's figures. |
+| 2 | **5h Session bar** | How much of your 5-hour usage window ("Current session" on the usage page) is used, and when it resets: a countdown and the clock time, e.g. "resets in 2 h 14 min 20:32". If you would hit the limit before then, it says when: "limit in ~1 h 10 min". The caption above it also carries the week's figures. |
 | 3 | **Context bar** | How full the context window is, with Claude's recall zones. Under it: the total on the left, the three biggest categories and the free space on the right. |
 | 4 | **Speaking / Silent** | Read aloud. A text button: **Speaking** when on, **Silent** when off; press it to switch. It sits just before ⚙. |
 | 5 | **⚙** | Opens and closes the settings row. It sits at the end of the lowest row shown. |
-| 6 | **Settings row** | A small dot • is on, a ring ◦ is off. The week controls come first, right after **Week**: **7d / 5d** and **Today**. Then **5h Session** and **Context**. |
+| 6 | **Settings row** | A small dot • is on, a ring ◦ is off. The week controls come first, right after **Week**: **7d / 5d** and **Today**. Then **5h Session** and **Context**, and last **Alerts**. |
 | – | **Month line** | A thin line for a monthly usage window. Drawn above the week bar only when Claude Code reports one; today it does not, so it stays hidden. It has no switch. |
 
 ## The week bar
@@ -42,7 +42,8 @@ about 14.3% in a full week, 20% in a work week.
 **Which days.** The 7-day window is cut into 24-hour days counted from when the
 window started (one week before the weekly reset), not from midnight. In a work
 week only the Mon–Fri days count, so a weekend adds no budget. The weekday is
-the local one, worked out with the system's `date` command.
+the local one, worked out with the system's `date` command (PowerShell on
+Windows).
 
 **Day names.** Each section has its day's name above it (`TUESDAY WEDNESDAY … MONDAY`),
 and the bar starts on the weekday your week resets, not on Monday. If the week
@@ -55,12 +56,13 @@ that point is **green**. Usage beyond it is **red**: you have already spent the
 budget of days still to come. Unused parts of a section are grey.
 
 **The caption** next to *Week Session* reads like
-`55% · ahead 12% · 4.5 d left · 10%/day`:
+`55% · ahead 12% · runs out Fri · 4.5 d left · 10%/day`:
 
 | Part | Meaning |
 |---|---|
 | `55%` | Share of the weekly limit used. Green while within pace, red once ahead. |
 | `ahead 12%` | Usage minus what is due so far. Shown only when you are ahead. |
+| `runs out Fri` | When you are ahead: the day the limit runs out if you go on at your average pace so far (counted days only), or `today`. Shown only when that is before the reset. |
 | `4.5 d left` | Counted days left until the reset, with what is left of today as a fraction: `7.0 d left` just after a reset, `6.3 d left` that evening. In a work week weekend hours do not count. |
 | `10%/day` | What is left of the limit, spread over those days. |
 | `last day · 20% left` | Shown on the last counted day. `no work days left` on a weekend after the last one. |
@@ -68,7 +70,9 @@ budget of days still to come. Unused parts of a section are grey.
 **Worked example (full week, 55% used, on day 3).** Three days are due, which is
 3 × 14.3% = 42.9%. You have used 55%, so you are 12% ahead: the first 42.9% is
 green and the next 12% is red, in day 4. The 45% that is left, over the 4.5 days
-left until the reset, is 10% a day.
+left until the reset, is 10% a day. At the pace so far (55% in 2.5 days, 22% a day) the
+45% left lasts about 2 days, so the limit runs out on day 5: `runs out Fri` for a
+week that resets on Monday.
 
 **Today.** A light grey bar, 1 px tall, sits just above today's section. It is
 still; nothing in the bar moves. It is hidden on a weekend in a work week, when
@@ -95,9 +99,24 @@ are:
 | 70–90% | HIGH | orange |
 | 90–100% | LIMIT | red |
 
+**Forecast.** When the pace of the last hour would use up the window before it
+resets, the caption says so after the figure: `62% · limit in ~1 h 10 min`. It
+is orange, and red under 30 minutes. The pace is the rise from the reading an
+hour ago (or the first one in this chat) to now, so it needs at least 10 minutes
+and a rise of 2% before it shows, and it eases off while you are idle. When the
+window lasts until the reset, nothing is shown.
+
+**Alerts.** Switched on, you get a notification when the 5-hour window passes
+80% and again at 95%, and one when it resets after such a warning. Each is sent
+once per window, also across chats. They are off after install; switch them with
+**Alerts** in the settings row or `/context-pane alerts`. They go through your
+own notification channel, as set in `/config`.
+
 The figures come from the same source as the status line, so they show only on
 a Claude subscription (Pro or Max). With an API key there are no usage figures,
-and the session and week bars stay hidden.
+and the session and week bars stay hidden. Instead the context row shows what
+the chat has cost so far, as `/cost` counts it: `Cost est. $1.24`. It is
+Claude Code's own estimate, not your bill.
 
 ## The context bar
 
@@ -145,7 +164,7 @@ saved as the mod's setting, so it holds in every chat until you change it.
 There are three ways to flip one:
 
 1. **In the row:** press **⚙**, then a switch: **Week**, **5h Session**,
-   **Context**; **7d / 5d**; **Today**. Press **⚙** again to close
+   **Context**; **7d / 5d**; **Today**; **Alerts**. Press **⚙** again to close
    the row. With every bar off, a short "all bars off" line keeps the **⚙** in
    place.
 2. **With a command:** see the table below.
@@ -163,6 +182,7 @@ There are three ways to flip one:
 | `/context-pane 5d` · `7d` | Splits the week bar into a work week or a full week |
 | `/context-pane today` | Switches the grey bar above today on or off |
 | `/context-pane speak` | Switches Read aloud on or off |
+| `/context-pane alerts` | Switches the 80% / 95% and reset notifications on or off |
 
 The figures refresh after every turn and are estimated locally, so the row
 makes no extra model calls. In a terminal, which draws no images, each bar is a
@@ -179,6 +199,7 @@ Saved per user, read again at the start of every chat.
 | `showContext` | Context bar | on | How full the context window is, with recall zones. |
 | `readAloud` | Read aloud | on | Read each of Claude's replies aloud (macOS, Windows and Linux). The speaker next to ⚙ switches it. |
 | `workWeek` | Week bar: work week | off | Split the week bar into 5 days (work week, Mon–Fri) instead of 7 (full week). The ⚙ switches show it as 5d / 7d. |
+| `alerts` | Alerts | off | A notification when the 5-hour window passes 80% and 95%, and when it resets after such a warning. The ⚙ switches show it as Alerts. |
 | `showToday` | Week bar: Today marker | on | A light grey bar, 1 px tall, just above the day section of the week bar we are in now. The ⚙ switches show it as Today. |
 
 ## How it works
@@ -234,7 +255,7 @@ then restart. (Bump `version` in `.claude-plugin/plugin.json` and in
 
 ```
 claude plugin validate  "<this folder>"   # checks the manifest and the module
-claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (50 tests)
+claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (66 tests)
 ```
 
 The tests mount the real row on the terminal and the desktop and check what it

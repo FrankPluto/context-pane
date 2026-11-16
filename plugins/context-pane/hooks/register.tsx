@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { BarId, ContextRow, ContextSnapshot, SessionLimit } from '../types'
 import { BARS, isBarId, isSwitchesOpen, readShown, readToday, readWeekDays, setBar, setWeekDays, startBars, startToday, startWeekDays, toggleSwitches, toggleToday, toggleWeekDays } from './bars'
+import { checkAlerts, readAlerts, startAlerts, toggleAlerts } from './alerts'
 import { hasVoice, noVoiceText, SPEAKER_KEY, speakReply, speakerView, startSpeech, toggleReadAloud } from './speech'
 import { TINY5_WOFF2_BASE64 } from './tiny5'
 
@@ -57,6 +58,12 @@ function short(n: number): string {
   if (n >= 1_000) return `${+(n / 1_000).toFixed(1)}k`
   return String(n)
 }
+
+// "$1.24", "<$0.01": the session's cost, an estimate as /cost works it out.
+function usd(n: number): string {
+  return n > 0 && n < 0.01 ? '<$0.01' : '$' + n.toFixed(2)
+}
+const COST_LABEL = 'Cost est. '
 
 // The colour of the zone the context is in now: the same as that zone's label on the bar.
 function zoneColor(s: ContextSnapshot): string {
@@ -258,6 +265,28 @@ const slotDow = (startDow: number, i: number) => ((startDow - 1 + i) % 7) + 1
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
 
+// The forecast needs half a counted day of use before the pace means anything.
+const RUN_OUT_MIN_DAYS = 0.5
+
+/**
+ * "Thu", or "today": the day the weekly limit runs out if use goes on at the
+ * average pace so far (counted days only), or undefined when it lasts to the reset.
+ * `since` is days since the window started; `slot` the 24 h slot we are in.
+ */
+function runOutDay(p: number, since: number, slot: number, isWork: (i: number) => boolean, startDow: number): string | undefined {
+  let spent = isWork(slot) ? since - slot : 0
+  for (let i = 0; i < slot; i++) if (isWork(i)) spent++
+  if (spent < RUN_OUT_MIN_DAYS || p <= 0 || p >= 100) return undefined
+  let need = (100 - p) / (p / spent) // counted days of use left at this pace
+  for (let i = slot; i < 7; i++) {
+    if (!isWork(i)) continue
+    const room = i === slot ? slot + 1 - since : 1
+    if (need <= room) return i === slot ? 'today' : DAY_WORDS[slotDow(startDow, i) - 1]
+    need -= room
+  }
+  return undefined
+}
+
 function weekPace(l: SessionLimit, days: 5 | 7): WeekPace | null {
   if (l.week === undefined) return null
   const p = Math.max(0, Math.min(100, l.week))
@@ -267,6 +296,7 @@ function weekPace(l: SessionLimit, days: 5 | 7): WeekPace | null {
   let elapsed = 0
   let todayIsWork = false
   let left = 0 // counted days left until the reset, with a fraction for what is left of today
+  let runsOut: string | undefined // the weekday the limit runs out at this pace, when that is before the reset
   if (known) {
     const since = (l.now - (l.weekResetsAt! - WEEK_MS)) / DAY_MS
     const slot = Math.max(0, Math.min(6, Math.floor(since)))
@@ -275,6 +305,7 @@ function weekPace(l: SessionLimit, days: 5 | 7): WeekPace | null {
     todayIsWork = isWork(slot)
     if (todayIsWork) left += Math.max(0, slot + 1 - since)
     for (let i = slot + 1; i < 7; i++) if (isWork(i)) left++
+    runsOut = runOutDay(p, since, slot, isWork, l.weekStartDow!)
   }
   const cells: WeekCell[] = Array.from({ length: days }, (_, j) => {
     const filled = clamp01((p - j * share) / share)
@@ -290,6 +321,7 @@ function weekPace(l: SessionLimit, days: 5 | 7): WeekPace | null {
   // Days left counts down to the reset: "7.0 d left" just after it, "6.3 d left" that evening.
   const parts: string[] = []
   if (ahead >= 0.5) parts.push(`ahead ${Math.round(ahead)}%`)
+  if (ahead >= 0.5 && runsOut) parts.push(`runs out ${runsOut}`)
   // "last day" only while that day is under way; on a weekend before Monday it still reads "1.0 d left".
   if (left > 1 || (left > 0 && !todayIsWork)) parts.push(`${left.toFixed(1)} d left · ${Math.round(Math.max(0, 100 - p) / left)}%/day`)
   else if (left > 0) parts.push(`last day · ${Math.round(Math.max(0, 100 - p))}% left`)
@@ -342,6 +374,52 @@ function limitColor(share: number): string {
   return (LIMIT_SEGS.find(z => share < z.to) ?? LIMIT_SEGS[LIMIT_SEGS.length - 1]!).color
 }
 
+// ---- Forecast ---------------------------------------------------------------
+// When the 5-hour window will run out at the pace of the last hour. Each change
+// in the figure is kept as a reading; the pace is the rise from the reading an
+// hour ago (or the first one) to now. Idle time counts too, so the forecast
+// eases off while you are away.
+const FORECAST_LOOKBACK = 60 * 60_000
+const FORECAST_MIN_SPAN = 10 * 60_000 // too little time says nothing about the pace
+const FORECAST_MIN_RISE = 2 // percentage points
+const SAMPLES_KEPT = 2 * 60 * 60_000
+const SAMPLES_MAX = 60
+const FORECAST_SOON = 30 * 60_000 // under this the note turns red
+const FORECAST_WARN = '#FA7B17'
+const FORECAST_ALERT = '#EA4335'
+
+// The readings with this one added: kept only for the same window, and only when the figure moved.
+function addSample(old: SessionLimit | null, resetsAt: number | null, now: number, percent: number): Array<[number, number]> {
+  let samples = old && old.resetsAt === resetsAt ? [...(old.samples ?? [])] : []
+  const last = samples[samples.length - 1]
+  // A lower figure means the window started over, whatever the reset time says.
+  if (last && percent < last[1]) samples = []
+  const newest = samples[samples.length - 1]
+  if (!newest || percent !== newest[1]) samples.push([now, percent])
+  // Keep the last two hours, but always the newest reading before them, as the baseline.
+  const since = now - SAMPLES_KEPT
+  const firstKept = samples.findIndex(([t]) => t >= since)
+  if (firstKept > 0) samples = samples.slice(firstKept - 1)
+  return samples.slice(-SAMPLES_MAX)
+}
+
+// Milliseconds until the window is used up at the current pace, or null when that is
+// not before the reset, or too little is known.
+function forecastMs(l: SessionLimit): number | null {
+  const s = l.samples ?? []
+  const lastReading = s[s.length - 1]
+  if (!lastReading || l.resetsAt === null || l.now >= l.resetsAt) return null
+  const percent = lastReading[1]
+  if (percent >= 100) return null
+  const start = l.now - FORECAST_LOOKBACK
+  const base = [...s].reverse().find(([t]) => t <= start) ?? s[0]!
+  const span = l.now - base[0]
+  const rise = percent - base[1]
+  if (span < FORECAST_MIN_SPAN || rise < FORECAST_MIN_RISE) return null
+  const left = ((100 - percent) / rise) * span
+  return l.now + left < l.resetsAt ? left : null
+}
+
 // "2 h 14 min", "14 min", "under 1 min"
 function untilText(ms: number): string {
   const m = Math.ceil(ms / 60_000)
@@ -351,7 +429,7 @@ function untilText(ms: number): string {
 }
 
 // `until` and `clock` are `right` in two parts, so the clock time can stand out from the countdown.
-type LimitView = { fill: number; color: string; left: string; right: string; alt: string; until?: string; clock?: string }
+type LimitView = { fill: number; color: string; left: string; right: string; alt: string; until?: string; clock?: string; forecast?: string; forecastColor?: string }
 
 function limitView(l: SessionLimit): LimitView {
   // Past the reset time the old figure no longer holds: a fresh window.
@@ -363,9 +441,13 @@ function limitView(l: SessionLimit): LimitView {
   const at = l.resetClock ? ` ${l.resetClock}` : ''
   const right = l.resetsAt === null ? '' : `resets in ${untilText(l.resetsAt - l.now)}${at}`
   const until = l.resetsAt === null ? undefined : `resets in ${untilText(l.resetsAt - l.now)}`
+  const ahead = forecastMs(l)
+  const forecast = ahead === null ? undefined : `limit in ~${untilText(ahead)}`
   return {
-    fill, color: limitColor(fill), left: pct, right, alt: `Session ${pct} used${right ? `, ${right}` : ''}`,
+    fill, color: limitColor(fill), left: pct, right,
+    alt: `Session ${pct} used${right ? `, ${right}` : ''}${forecast ? `, at this pace ${forecast}` : ''}`,
     ...(until ? { until } : {}), ...(until && l.resetClock ? { clock: l.resetClock } : {}),
+    ...(forecast ? { forecast, forecastColor: ahead! < FORECAST_SOON ? FORECAST_ALERT : FORECAST_WARN } : {}),
   }
 }
 
@@ -399,31 +481,45 @@ async function measureLimit($: EngineInterface, rateLimits: ReadonlyArray<{ kind
         ...(weekStartDow ? { weekStartDow } : {}),
         ...(weekResetClock ? { weekResetClock } : {}),
         ...(month ? { month: month.percentUsed } : {}),
+        samples: addSample(old, at, now, five.percentUsed),
       }
     : null
   await update($, sessionLimit, () => next)
+  if (next) await checkAlerts($, next, limitView(next).until)
 }
 
-// "20:32" in the person's own time zone: the system's date command knows it.
+// The hooks module's own clock runs in UTC, so the local time comes from the
+// system: the `date` command on macOS and Linux (BSD `-r`, then GNU `-d`), and
+// on Windows, which has no `date` program, PowerShell's DateTimeOffset.
+function localArgv(secs: string, unix: string, windows: string): string[][] {
+  return [
+    ['date', '-r', secs, unix],
+    ['date', '-d', `@${secs}`, unix],
+    ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `[DateTimeOffset]::FromUnixTimeSeconds(${secs}).ToLocalTime()${windows}`],
+  ]
+}
+
+// The first answer that matches `shape`, or undefined when no command gives one.
+async function askLocal($: EngineInterface, ms: number, unix: string, windows: string, shape: RegExp): Promise<string | undefined> {
+  const secs = String(Math.floor(ms / 1000))
+  for (const argv of localArgv(secs, unix, windows)) {
+    const r = await $.process.run(argv, { timeoutMs: 10_000 }).catch(() => null)
+    const out = r?.stdout.trim() ?? ''
+    if (r && r.exitCode === 0 && shape.test(out)) return out
+  }
+  return undefined
+}
+
+// "20:32" in the person's own time zone. The invariant culture keeps the colon on Windows.
 async function clockTime($: EngineInterface, ms: number): Promise<string | undefined> {
-  const secs = String(Math.floor(ms / 1000))
-  for (const argv of [['date', '-r', secs, '+%H:%M'], ['date', '-d', `@${secs}`, '+%H:%M']]) {
-    const r = await $.process.run(argv).catch(() => null)
-    const out = r?.stdout.trim() ?? ''
-    if (r && r.exitCode === 0 && /^\d{2}:\d{2}$/.test(out)) return out
-  }
-  return undefined
+  return askLocal($, ms, '+%H:%M', ".ToString('HH:mm', [Globalization.CultureInfo]::InvariantCulture)", /^\d{2}:\d{2}$/)
 }
 
-// 1 (Monday) to 7 (Sunday): the local weekday of an instant; the system's date command knows the time zone.
+// 1 (Monday) to 7 (Sunday): the local weekday of an instant. .NET counts Sunday as 0, so it becomes 7.
 async function weekdayOf($: EngineInterface, ms: number): Promise<number | undefined> {
-  const secs = String(Math.floor(ms / 1000))
-  for (const argv of [['date', '-r', secs, '+%u'], ['date', '-d', `@${secs}`, '+%u']]) {
-    const r = await $.process.run(argv).catch(() => null)
-    const out = r?.stdout.trim() ?? ''
-    if (r && r.exitCode === 0 && /^[1-7]$/.test(out)) return Number(out)
-  }
-  return undefined
+  const out = await askLocal($, ms, '+%u', '.DayOfWeek.value__', /^[0-7]$/)
+  if (out === undefined) return undefined
+  return out === '0' ? 7 : Number(out)
 }
 
 // Every 30 s: moves the "resets in" countdown.
@@ -431,7 +527,9 @@ async function tickLimit($: EngineInterface): Promise<void> {
   const l = await read($, sessionLimit)
   if (!l) return
   const now = await $.clock.now()
-  await update($, sessionLimit, () => ({ ...l, now }))
+  const next = { ...l, now }
+  await update($, sessionLimit, () => next)
+  await checkAlerts($, next, limitView(next).until)
 }
 
 // Terminal fallback: the terminal draws no SVG.
@@ -443,7 +541,7 @@ function textBar(p: number | null): string {
 
 // Reads the same figures /context shows. `summary` estimates locally: no API calls.
 async function measure($: EngineInterface): Promise<void> {
-  const { context, rateLimits } = await $.session.usage({ breakdown: 'summary' })
+  const { context, rateLimits, cost } = await $.session.usage({ breakdown: 'summary' })
   await measureLimit($, rateLimits ?? []).catch(() => undefined)
   const b = context.breakdown
   const cats = b?.categories ?? []
@@ -460,6 +558,8 @@ async function measure($: EngineInterface): Promise<void> {
     top,
     free: freeRow ? freeRow.tokens : null,
     ...(b?.isAutoCompactEnabled && b.autoCompactThreshold ? { compactAt: b.autoCompactThreshold } : {}),
+    // On a subscription usage is not billed in dollars, so the cost shows only with an API key (no rate limits).
+    ...(cost && !(rateLimits ?? []).length ? { costUsd: cost.usd } : {}),
   }
   await update($, snapshot, () => next)
 }
@@ -482,14 +582,15 @@ async function toggleBar($: EngineInterface, id: BarId): Promise<boolean> {
 
 const HELP =
   'Show or hide the context row. "week", "session" or "context" switches one bar, "switches" opens the switches, ' +
-  '"speak" switches Read aloud, "5d" / "7d" splits the week bar into a work week or a full week, "today" switches the grey bar above today'
+  '"speak" switches Read aloud, "5d" / "7d" splits the week bar into a work week or a full week, "today" switches the grey bar above today, ' +
+  '"alerts" switches notifications at 80% and 95% of the 5-hour window'
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'context-pane',
       description: HELP,
-      argumentHint: '[week|session|context|switches|speak|5d|7d|today]',
+      argumentHint: '[week|session|context|switches|speak|5d|7d|today|alerts]',
       immediate: true,
     })
     const result = await next(e)
@@ -497,6 +598,7 @@ export const register: Register = (on, options) => {
     await startSpeech($, options)
     await startWeekDays($, options)
     await startToday($, options)
+    await startAlerts($, options)
     await measure($).catch(() => undefined)
     $.clock.every(30_000, () => {
       void tickLimit($).catch(() => undefined)
@@ -528,6 +630,10 @@ export const register: Register = (on, options) => {
       if (!(await hasVoice($))) return { text: await noVoiceText($) }
       const isOn = await toggleReadAloud($)
       return { text: isOn ? 'Read aloud on: replies are read aloud.' : 'Read aloud off. /context-pane speak turns it on.' }
+    }
+    if (arg === 'alerts') {
+      const isOn = await toggleAlerts($)
+      return { text: isOn ? 'Alerts on: a notification at 80% and 95% of the 5-hour window, and when it resets.' : 'Alerts off. /context-pane alerts turns them on.' }
     }
     if (arg === 'today') {
       const isOn = await toggleToday($)
@@ -567,11 +673,14 @@ export const register: Register = (on, options) => {
     const days = await readWeekDays($)
     const pace = week !== undefined && lim ? weekPace(lim, days) : null
     const todayOn = await readToday($)
+    const alertsOn = await readAlerts($)
     const todaySection = todayOn ? (pace?.today ?? null) : null
 
     // The usage figures, in the order of the caption.
     const figures: Figure[] = [
-      ...(limit ? [{ label: '5h Session', value: limit.left, color: limit.color }] : []),
+      ...(limit
+        ? [{ label: '5h Session', value: limit.left, color: limit.color, ...(limit.forecast ? { note: limit.forecast, noteColor: limit.forecastColor } : {}) }]
+        : []),
       ...(week !== undefined
         ? [{
             label: 'Week Session',
@@ -632,6 +741,7 @@ export const register: Register = (on, options) => {
         <Button key="switch-week-days" label={`${days}d`} plain onPress={() => void toggleWeekDays($)} />
         {small('switch-today', `${mark(todayOn)} Today`, !todayOn, () => void toggleToday($))}
         {BARS.filter(b => b.id !== 'week').map(barButton)}
+        {small('switch-alerts', `${mark(alertsOn)} Alerts`, !alertsOn, () => void toggleAlerts($))}
       </Box>
     ) : null
 
@@ -659,6 +769,12 @@ export const register: Register = (on, options) => {
               <Text wrap="truncate-end">
                 <Text color={pc}>{textBar(snap.percent)}</Text>
                 <Text bold color={pc}> {used} / {short(snap.window)}{pct}</Text>
+                {snap.costUsd !== undefined ? (
+                  <Text>
+                    <Text dimColor>{'  ·  ' + COST_LABEL}</Text>
+                    <Text>{usd(snap.costUsd)}</Text>
+                  </Text>
+                ) : null}
                 {cats.map(c => (
                   <Text key={c.label}>
                     <Text dimColor>{'  ·  ' + c.label + ' '}</Text>
@@ -733,6 +849,12 @@ export const register: Register = (on, options) => {
                 <Text size="caption" wrap="truncate-end" tabular>
                   <Text dimColor>Total </Text>
                   <Text weight="semibold" color={pc}>{used} / {short(snap.window)}{pct}</Text>
+                  {snap.costUsd !== undefined ? (
+                    <Text>
+                      <Text dimColor>{'  ·  ' + COST_LABEL}</Text>
+                      <Text weight="medium">{usd(snap.costUsd)}</Text>
+                    </Text>
+                  ) : null}
                 </Text>
                 <Box flexDirection="row" alignItems="center" gap={1}>
                   <Text size="caption" wrap="truncate-end" tabular>
