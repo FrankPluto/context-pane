@@ -55,6 +55,12 @@ function setup(on: TestOn, opts: { store?: Record<string, unknown>; limits?: () 
       if (!(opts.linuxTools ?? []).includes(argv[0]!)) return { value: { exitCode: 127, stdout: '', stderr: `${argv[0]}: not found\n` } } as never
       return { value: { exitCode: 0, stdout: `${argv[0]} 1.0\n`, stderr: '' } } as never
     }
+    // Windows has no date program: the local time comes from PowerShell, which counts Sunday as 0.
+    if (argv[0] === 'date' && os === 'windows') throw new Error('date: not found')
+    if (argv[0] === 'powershell.exe' && /FromUnixTimeSeconds/.test(argv[4] ?? '')) {
+      if (/DayOfWeek/.test(argv[4]!)) return { value: opts.dow ? { exitCode: 0, stdout: `${opts.dow % 7}\r\n`, stderr: '' } : { exitCode: 1, stdout: '', stderr: '' } } as never
+      return { value: { exitCode: 0, stdout: '20:32\r\n', stderr: '' } } as never
+    }
     if (argv[0] === 'date' && argv.includes('+%u')) {
       // The weekday the week window started on, when a test gives one; else the command fails.
       return { value: opts.dow ? { exitCode: 0, stdout: `${opts.dow}\n`, stderr: '' } : { exitCode: 1, stdout: '', stderr: '' } } as never
@@ -202,6 +208,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
       v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
       const work = [...(await weekSvgOf(v))!.props.source.matchAll(/<text[^>]*>([A-Z]+)<\/text>/g)].map(m => m[1])
       expect(work, 'work week from Tuesday, Monday last').toEqual(['TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'MONDAY'])
+    }
+  })
+
+  test(`Windows: the reset clock time and the day names come from PowerShell (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    // Resets on a Sunday, which .NET counts as 0: the sections run Sun to Sat.
+    const start = 1_000_000
+    setup(on, { os: 'windows', dow: 7, limits: () => [{ kind: 'five_hour', percentUsed: 10, resetsAt: new Date(start + 90 * 60_000).toISOString() }, { kind: 'seven_day', percentUsed: 30, resetsAt: weekReset }] })
+    mock.clock(on, { now: start })
+    await $.session.start({ source: 'startup', cwd: '/Users/test', surface, isInteractive: true } as never)
+    const v = await $.ui.mount({ plugin: 'context-pane', surface, component: 'AbovePrompt', props: props() })
+    expect(await v.find({ text: surface === 'desktop' ? /^20:32$/ : /resets in 1 h 30 min 20:32/ }), 'the reset as a clock time').toBeDefined()
+    if (surface === 'desktop') {
+      const svg = (await weekSvgOf(v))!
+      const names = [...svg.props.source.matchAll(/<text[^>]*>([A-Z]+)<\/text>/g)].map(m => m[1])
+      expect(names, 'Sunday first').toEqual(['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'])
     }
   })
 

@@ -1,6 +1,6 @@
 # Context Pane — manual
 
-*Version 2.1.0.* A Claude Code mod that keeps your usage and your context window
+*Version 2.1.1.* A Claude Code mod that keeps your usage and your context window
 in sight, as thin bars just above the prompt, and can read Claude's replies
 aloud. Every bar can be switched off, and a fresh install
 starts with all of them on.
@@ -42,7 +42,8 @@ about 14.3% in a full week, 20% in a work week.
 **Which days.** The 7-day window is cut into 24-hour days counted from when the
 window started (one week before the weekly reset), not from midnight. In a work
 week only the Mon–Fri days count, so a weekend adds no budget. The weekday is
-the local one, worked out with the system's `date` command.
+the local one, worked out with the system's `date` command (PowerShell on
+Windows).
 
 **Day names.** Each section has its day's name above it (`TUESDAY WEDNESDAY … MONDAY`),
 and the bar starts on the weekday your week resets, not on Monday. If the week
@@ -234,7 +235,7 @@ then restart. (Bump `version` in `.claude-plugin/plugin.json` and in
 
 ```
 claude plugin validate  "<this folder>"   # checks the manifest and the module
-claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (50 tests)
+claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (52 tests)
 ```
 
 The tests mount the real row on the terminal and the desktop and check what it

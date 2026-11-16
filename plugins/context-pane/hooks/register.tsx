@@ -404,26 +404,38 @@ async function measureLimit($: EngineInterface, rateLimits: ReadonlyArray<{ kind
   await update($, sessionLimit, () => next)
 }
 
-// "20:32" in the person's own time zone: the system's date command knows it.
-async function clockTime($: EngineInterface, ms: number): Promise<string | undefined> {
+// The hooks module's own clock runs in UTC, so the local time comes from the
+// system: the `date` command on macOS and Linux (BSD `-r`, then GNU `-d`), and
+// on Windows, which has no `date` program, PowerShell's DateTimeOffset.
+function localArgv(secs: string, unix: string, windows: string): string[][] {
+  return [
+    ['date', '-r', secs, unix],
+    ['date', '-d', `@${secs}`, unix],
+    ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `[DateTimeOffset]::FromUnixTimeSeconds(${secs}).ToLocalTime()${windows}`],
+  ]
+}
+
+// The first answer that matches `shape`, or undefined when no command gives one.
+async function askLocal($: EngineInterface, ms: number, unix: string, windows: string, shape: RegExp): Promise<string | undefined> {
   const secs = String(Math.floor(ms / 1000))
-  for (const argv of [['date', '-r', secs, '+%H:%M'], ['date', '-d', `@${secs}`, '+%H:%M']]) {
-    const r = await $.process.run(argv).catch(() => null)
+  for (const argv of localArgv(secs, unix, windows)) {
+    const r = await $.process.run(argv, { timeoutMs: 10_000 }).catch(() => null)
     const out = r?.stdout.trim() ?? ''
-    if (r && r.exitCode === 0 && /^\d{2}:\d{2}$/.test(out)) return out
+    if (r && r.exitCode === 0 && shape.test(out)) return out
   }
   return undefined
 }
 
-// 1 (Monday) to 7 (Sunday): the local weekday of an instant; the system's date command knows the time zone.
+// "20:32" in the person's own time zone. The invariant culture keeps the colon on Windows.
+async function clockTime($: EngineInterface, ms: number): Promise<string | undefined> {
+  return askLocal($, ms, '+%H:%M', ".ToString('HH:mm', [Globalization.CultureInfo]::InvariantCulture)", /^\d{2}:\d{2}$/)
+}
+
+// 1 (Monday) to 7 (Sunday): the local weekday of an instant. .NET counts Sunday as 0, so it becomes 7.
 async function weekdayOf($: EngineInterface, ms: number): Promise<number | undefined> {
-  const secs = String(Math.floor(ms / 1000))
-  for (const argv of [['date', '-r', secs, '+%u'], ['date', '-d', `@${secs}`, '+%u']]) {
-    const r = await $.process.run(argv).catch(() => null)
-    const out = r?.stdout.trim() ?? ''
-    if (r && r.exitCode === 0 && /^[1-7]$/.test(out)) return Number(out)
-  }
-  return undefined
+  const out = await askLocal($, ms, '+%u', '.DayOfWeek.value__', /^[0-7]$/)
+  if (out === undefined) return undefined
+  return out === '0' ? 7 : Number(out)
 }
 
 // Every 30 s: moves the "resets in" countdown.
