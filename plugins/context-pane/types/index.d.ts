@@ -45,6 +45,40 @@ export type BarId = 'week' | 'session' | 'context'
 /** Which bars are switched on. */
 export type ShownBars = Record<BarId, boolean>
 
+/**
+ * The snapshot file the mod writes for apps outside Claude Code, as JSON:
+ * ~/.claude/context-pane/latest.json and ~/.claude/context-pane/chats/<session id>.json.
+ * Times are ms since 1970 (UTC). `schema` goes up only when a field changes
+ * meaning or goes away; a reader ignores fields it does not know.
+ */
+export type UsageSnapshotFile = {
+  schema: 1
+  source: 'context-pane'
+  /** When the figures were measured, in ms. */
+  capturedAt: number
+  /** The same instant as an ISO 8601 string, for people reading the file. */
+  capturedAtIso: string
+  /** The chat measured: its session id and its folder's name (not the full path). */
+  chat: { id: string | null; folder: string | null }
+  /** The account's usage windows; null when Claude Code does not report them (no subscription). */
+  usage: {
+    fiveHour: { percent: number; resetsAt: number | null } | null
+    week: { percent: number; resetsAt: number | null } | null
+    month: { percent: number; resetsAt: number | null } | null
+  }
+  /** The chat's context window, as the Context bar shows it; null before the first measure. */
+  context: {
+    tokens: number | null
+    window: number
+    percent: number | null
+    top: ContextRow[]
+    free: number | null
+    compactAt: number | null
+  } | null
+  /** The bar switches, so an app can start with the same choices. */
+  settings: { shown: ShownBars; weekDays: 5 | 7; showToday: boolean }
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'context-pane': {

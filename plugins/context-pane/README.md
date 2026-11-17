@@ -1,6 +1,6 @@
 # Context Pane — manual
 
-*Version 2.1.0.* A Claude Code mod that keeps your usage and your context window
+*Version 2.2.0.* A Claude Code mod that keeps your usage and your context window
 in sight, as thin bars just above the prompt, and can read Claude's replies
 aloud. Every bar can be switched off, and a fresh install
 starts with all of them on.
@@ -180,6 +180,52 @@ Saved per user, read again at the start of every chat.
 | `readAloud` | Read aloud | on | Read each of Claude's replies aloud (macOS, Windows and Linux). The speaker next to ⚙ switches it. |
 | `workWeek` | Week bar: work week | off | Split the week bar into 5 days (work week, Mon–Fri) instead of 7 (full week). The ⚙ switches show it as 5d / 7d. |
 | `showToday` | Week bar: Today marker | on | A light grey bar, 1 px tall, just above the day section of the week bar we are in now. The ⚙ switches show it as Today. |
+| `writeSnapshot` | Snapshot file | on | Write the figures to `~/.claude/context-pane/latest.json` (and one file per chat) each time they are measured, for the Context Pane app on Mac and iPhone. See [The snapshot file](#the-snapshot-file). |
+
+## The snapshot file
+
+Each time the mod measures (at the start of a chat and after each turn where
+the figures moved), it writes them as JSON, so an app outside Claude Code can
+show the same bars. The planned Context Pane app for Mac and iPhone reads it.
+
+| File | What it holds |
+|---|---|
+| `~/.claude/context-pane/latest.json` | The chat measured last. |
+| `~/.claude/context-pane/chats/<session id>.json` | One file per chat, so several chats at once do not overwrite each other. |
+
+The schema is `UsageSnapshotFile` in `types/index.d.ts`. In short:
+
+```json
+{
+  "schema": 1,
+  "source": "context-pane",
+  "capturedAt": 1763337600000,
+  "capturedAtIso": "2025-11-17T00:00:00.000Z",
+  "chat": { "id": "<session id>", "folder": "my-app" },
+  "usage": {
+    "fiveHour": { "percent": 23.5, "resetsAt": 1763344800000 },
+    "week": { "percent": 40, "resetsAt": 1763596800000 },
+    "month": null
+  },
+  "context": { "tokens": 182000, "window": 1000000, "percent": 18,
+               "top": [{ "name": "Messages", "tokens": 150000 }],
+               "free": 800000, "compactAt": null },
+  "settings": { "shown": { "week": true, "session": true, "context": true },
+                "weekDays": 7, "showToday": true }
+}
+```
+
+- Times are milliseconds since 1970 (UTC). A window is `null` when Claude Code
+  does not report it; `resetsAt` is `null` when its reset time is unknown.
+- The figures are only as fresh as `capturedAt`: nothing updates them while no
+  chat is running. Reset times are absolute, so a countdown worked out from
+  them stays right.
+- Only the chat folder's name is written, not its full path.
+- `schema` goes up only when a field changes meaning or goes away. New fields
+  can be added at any time, so a reader should ignore fields it does not know.
+- The file is written in place. A reader that catches it half written gets
+  JSON that does not parse; it should keep the last good copy and read again.
+- Switch it off with `writeSnapshot` in `/config`.
 
 ## How it works
 
@@ -193,6 +239,7 @@ The mod is one hooks module (`hooks/register.tsx`) with helpers beside it.
   reset times. It makes no model calls to do so.
 - The week bar's pace is worked out in `weekPace` and drawn by `weekSvg`; the
   weekday of the window start is read once per weekly reset.
+- `hooks/snapshot.ts` writes the snapshot file after each measure.
 - `hooks/bars.ts` holds the on/off state and the saved settings (bars, 5d/7d,
   Today); `hooks/speech.ts` holds Read aloud.
 - State is kept per chat in the session; the settings above are saved across
@@ -234,7 +281,7 @@ then restart. (Bump `version` in `.claude-plugin/plugin.json` and in
 
 ```
 claude plugin validate  "<this folder>"   # checks the manifest and the module
-claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (50 tests)
+claude plugin test      "<this folder>"   # runs hooks/register.test.tsx (54 tests)
 ```
 
 The tests mount the real row on the terminal and the desktop and check what it

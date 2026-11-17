@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { BarId, ContextRow, ContextSnapshot, SessionLimit } from '../types'
 import { BARS, isBarId, isSwitchesOpen, readShown, readToday, readWeekDays, setBar, setWeekDays, startBars, startToday, startWeekDays, toggleSwitches, toggleToday, toggleWeekDays } from './bars'
+import { snapshotOn, writeSnapshot } from './snapshot'
 import { hasVoice, noVoiceText, SPEAKER_KEY, speakReply, speakerView, startSpeech, toggleReadAloud } from './speech'
 import { TINY5_WOFF2_BASE64 } from './tiny5'
 
@@ -462,6 +463,21 @@ async function measure($: EngineInterface): Promise<void> {
     ...(b?.isAutoCompactEnabled && b.autoCompactThreshold ? { compactAt: b.autoCompactThreshold } : {}),
   }
   await update($, snapshot, () => next)
+  if (isSnapshotOn) await saveSnapshot($).catch(() => undefined)
+}
+
+// The snapshot file for apps outside Claude Code (see snapshot.ts); the
+// `writeSnapshot` setting, read each time the module loads.
+let isSnapshotOn = true
+
+async function saveSnapshot($: EngineInterface): Promise<void> {
+  await writeSnapshot($, {
+    limit: await read($, sessionLimit),
+    context: await read($, snapshot),
+    shown: await readShown($),
+    weekDays: await readWeekDays($),
+    showToday: await readToday($),
+  })
 }
 
 
@@ -485,6 +501,7 @@ const HELP =
   '"speak" switches Read aloud, "5d" / "7d" splits the week bar into a work week or a full week, "today" switches the grey bar above today'
 
 export const register: Register = (on, options) => {
+  isSnapshotOn = snapshotOn(options)
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'context-pane',
