@@ -561,3 +561,60 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
 }
+
+// ---- Snapshot file ----------------------------------------------------------
+
+const LATEST = '/Users/test/.claude/context-pane/latest.json'
+const CHAT = '/Users/test/.claude/context-pane/chats/sid.json'
+
+test('each measure writes the figures to latest.json and the chat\'s own file', { timeoutMs: 30000 }, async ($, on) => {
+  const start = 1_000_000
+  const fiveAt = new Date(start + 2 * 60 * 60_000).toISOString()
+  const weekAt = new Date(start + 3 * 24 * 60 * 60_000).toISOString()
+  const limits: unknown[] = [{ kind: 'five_hour', percentUsed: 23.5, resetsAt: fiveAt }, { kind: 'seven_day', percentUsed: 40, resetsAt: weekAt }]
+  const { files } = setup(on, { limits: () => limits })
+  on('session.root', async () => ({ value: '/Users/test/code/my-app' }) as never)
+  mock.clock(on, { now: start })
+  await $.session.start({ source: 'startup', cwd: '/Users/test/code/my-app', surface: 'desktop', isInteractive: true } as never)
+
+  expect(files[LATEST], 'latest.json written').toBeDefined()
+  expect(files[CHAT], 'the chat\'s file is the same').toBe(files[LATEST])
+  const snap = JSON.parse(files[LATEST]!)
+  expect(snap.schema, 'schema 1').toBe(1)
+  expect(snap.capturedAt, 'when it was measured').toBe(start)
+  expect(snap.chat, 'chat id and folder name only').toEqual({ id: 'sid', folder: 'my-app' })
+  expect(snap.usage.fiveHour, '5-hour window').toEqual({ percent: 23.5, resetsAt: Date.parse(fiveAt) })
+  expect(snap.usage.week, 'week window').toEqual({ percent: 40, resetsAt: Date.parse(weekAt) })
+  expect(snap.usage.month, 'no month reported').toBe(null)
+  expect(snap.context.tokens, 'context tokens').toBe(182_000)
+  expect(snap.context.window, 'context window').toBe(1_000_000)
+  expect(snap.context.top, 'biggest categories').toEqual([{ name: 'Messages', tokens: 150_000 }])
+  expect(snap.context.free, 'free space').toBe(800_000)
+  expect(snap.settings, 'the switches').toEqual({ shown: { week: true, session: true, context: true }, weekDays: 7, showToday: true })
+})
+
+test('the snapshot carries the switches as saved', { timeoutMs: 30000, options: { workWeek: true, showContext: false, showToday: false } }, async ($, on) => {
+  const { files } = setup(on, { limits: () => [{ kind: 'five_hour', percentUsed: 10 }] })
+  mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ source: 'startup', cwd: '/Users/test', surface: 'terminal', isInteractive: true } as never)
+  const snap = JSON.parse(files[LATEST]!)
+  expect(snap.settings, 'work week, context off, no today marker').toEqual({ shown: { week: true, session: true, context: false }, weekDays: 5, showToday: false })
+  expect(snap.usage.fiveHour, 'no reset time reported').toEqual({ percent: 10, resetsAt: null })
+  expect(snap.usage.week, 'no week reported').toBe(null)
+})
+
+test('without a subscription the usage windows are null', { timeoutMs: 30000 }, async ($, on) => {
+  const { files } = setup(on)
+  mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ source: 'startup', cwd: '/Users/test', surface: 'terminal', isInteractive: true } as never)
+  const snap = JSON.parse(files[LATEST]!)
+  expect(snap.usage, 'no windows').toEqual({ fiveHour: null, week: null, month: null })
+  expect(snap.context.tokens, 'the context is still there').toBe(182_000)
+})
+
+test('Snapshot file switched off writes nothing', { timeoutMs: 30000, options: { writeSnapshot: false } }, async ($, on) => {
+  const { files } = setup(on, { limits: () => [{ kind: 'five_hour', percentUsed: 10 }] })
+  mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ source: 'startup', cwd: '/Users/test', surface: 'terminal', isInteractive: true } as never)
+  expect(Object.keys(files).filter(p => p.includes('context-pane/')), 'no snapshot files').toEqual([])
+})
